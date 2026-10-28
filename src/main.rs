@@ -1,0 +1,126 @@
+use anyhow::{Result, ensure};
+use clap::{Parser, Subcommand};
+use packweir::{
+    config::Config,
+    gateway::{self, AppState},
+    inventory, scanner,
+    storage::BlobStore,
+    store::Store,
+};
+use std::{path::PathBuf, sync::Arc};
+
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(long, default_value = "packweir.toml", global = true)]
+    config: PathBuf,
+    #[command(subcommand)]
+    command: Commands,
+}
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the authenticated gateway. Requires DATABASE_URL, PACKWEIR_ADMIN_TOKEN, PACKWEIR_READ_TOKEN.
+    Serve,
+    /// Run scanner adapters in a dedicated worker process. Requires DATABASE_URL.
+    Worker {
+        #[arg(long)]
+        once: bool,
+    },
+    /// Validate configuration without connecting to any service.
+    Validate,
+    /// Inspect a local archive without executing package code.
+    Inventory {
+        path: PathBuf,
+        #[arg(long, default_value = "inventory")]
+        format: String,
+    },
+    /// Inspect a staged artifact through the administrative API.
+    Inspect { digest: String },
+    /// Queue an artifact through native proxy routing (returns pending until approved).
+    Prefetch { repository: String, path: String },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    let cli = Cli::parse();
+    if let Commands::Inventory { path, format } = &cli.command {
+        let metadata = std::fs::metadata(path)?;
+        ensure!(
+            metadata.len() <= 128 * 1024 * 1024,
+            "local input exceeds 128 MiB"
+        );
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("missing filename"))?
+            .to_string_lossy();
+        let inventory =
+            inventory::inspect(&name, &std::fs::read(path)?, inventory::Limits::default())?;
+        let value = match format.as_str() {
+            "cyclonedx" => inventory::cyclonedx(&inventory),
+            "spdx" => inventory::spdx(&inventory),
+            "inventory" => serde_json::to_value(inventory)?,
+            _ => anyhow::bail!("unknown format"),
+        };
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    let config = Arc::new(Config::load(&cli.config)?);
+    match cli.command {
+        Commands::Validate => println!("configuration valid: {}", config.fingerprint()),
+        Commands::Inspect { digest } => {
+            let url = config
+                .public_url
+                .join(&format!("api/v1/artifacts/{digest}"))?;
+            println!(
+                "{}",
+                reqwest::Client::new()
+                    .get(url)
+                    .bearer_auth(std::env::var("PACKWEIR_ADMIN_TOKEN")?)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await?
+            );
+        }
+        Commands::Prefetch { repository, path } => {
+            let response = reqwest::Client::new()
+                .post(config.public_url.join("api/v1/prefetch")?)
+                .bearer_auth(std::env::var("PACKWEIR_ADMIN_TOKEN")?)
+                .json(&serde_json::json!({"repository":repository,"path":path}))
+                .send()
+                .await?;
+            let status = response.status();
+            println!("{}", response.text().await?);
+            ensure!(status.is_success(), "prefetch not approved: {status}");
+        }
+        Commands::Serve | Commands::Worker { .. } => {
+            let store = Store::connect(&std::env::var("DATABASE_URL")?).await?;
+            let blobs = BlobStore::new(&config.storage)?;
+            match cli.command {
+                Commands::Worker { once } => scanner::worker(config, store, blobs, once).await?,
+                Commands::Serve => {
+                    let admin = std::env::var("PACKWEIR_ADMIN_TOKEN")?;
+                    let read = std::env::var("PACKWEIR_READ_TOKEN")?;
+                    ensure!(
+                        admin.len() >= 32 && read.len() >= 32 && admin != read,
+                        "use distinct admin/read tokens of at least 32 characters"
+                    );
+                    let listener = tokio::net::TcpListener::bind(config.listen).await?;
+                    let app = gateway::router(AppState::new(config, store, blobs, admin, read));
+                    axum::serve(listener, app)
+                        .with_graceful_shutdown(async {
+                            let _ = tokio::signal::ctrl_c().await;
+                        })
+                        .await?;
+                }
+                _ => unreachable!(),
+            }
+        }
+        Commands::Inventory { .. } => unreachable!(),
+    }
+    Ok(())
+}

@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: packweir
+      POSTGRES_USER: packweir
+      POSTGRES_PASSWORD: ${PACKWEIR_DB_PASSWORD:?Set PACKWEIR_DB_PASSWORD}
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U packweir -d packweir"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres:/var/lib/postgresql/data
+  gateway:
+    build: .
+    command: [--config, /app/packweir.container.toml, serve]
+    environment:
+      DATABASE_URL: postgres://packweir:${PACKWEIR_DB_PASSWORD}@postgres/packweir
+      PACKWEIR_ADMIN_TOKEN: ${PACKWEIR_ADMIN_TOKEN:?Set distinct tokens of at least 32 characters}
+      PACKWEIR_READ_TOKEN: ${PACKWEIR_READ_TOKEN:?Set distinct tokens of at least 32 characters}
+      RUST_LOG: packweir=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./packweir.container.toml:/app/packweir.container.toml:ro
+      - blobs:/data
+  worker:
+    build: .
+    command: [--config, /app/packweir.container.toml, worker]
+    environment:
+      DATABASE_URL: postgres://packweir:${PACKWEIR_DB_PASSWORD}@postgres/packweir
+      RUST_LOG: packweir=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./packweir.container.toml:/app/packweir.container.toml:ro
+      - blobs:/data
+volumes:
+  postgres:
+  blobs:

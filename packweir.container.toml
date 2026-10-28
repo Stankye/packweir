@@ -1,0 +1,57 @@
+# Experimental configuration. Inventory alone is not a malware/provenance guarantee.
+# Before enforcing additional checks, configure trusted scanner adapter executables below.
+listen = "0.0.0.0:8080"
+public_url = "http://127.0.0.1:8080/"
+max_download_bytes = 134217728
+evidence_ttl_seconds = 86400
+allow_private_upstreams = false
+
+[storage]
+kind = "fs"
+root = "/data"
+
+[policy]
+revision = "bootstrap-inventory-v1"
+required = ["inventory", "archive_safety"]
+deny_on_failure = []
+trust_agent = false
+
+[repositories.npm]
+ecosystem = "npm"
+upstream = "https://registry.npmjs.org/"
+download_origins = []
+retain = true
+
+[repositories.pypi]
+ecosystem = "pypi"
+upstream = "https://pypi.org/simple/"
+download_origins = ["https://files.pythonhosted.org/"]
+retain = true
+
+[repositories.cargo]
+ecosystem = "cargo"
+upstream = "https://index.crates.io/"
+download_origins = ["https://static.crates.io/"]
+cargo_download_template = "https://static.crates.io/crates/{crate}/{crate}-{version}.crate"
+retain = true
+
+[repositories.maven]
+ecosystem = "maven"
+upstream = "https://repo.maven.apache.org/maven2/"
+download_origins = []
+retain = true
+
+[repositories.nuget]
+ecosystem = "nuget"
+upstream = "https://api.nuget.org/v3/"
+download_origins = ["https://api.nuget.org/", "https://azuresearch-usnc.nuget.org/", "https://azuresearch-ussc.nuget.org/"]
+retain = true
+
+# Example adapter configuration (requires an operator-supplied protocol adapter):
+# [scanners.provenance]
+# program = "/opt/packweir-adapters/provenance"
+# args = []
+# version = "adapter-and-verifier-rules-v1"
+# timeout_seconds = 120
+# [scanners.provenance.environment]
+# TRUST_POLICY = "/etc/packweir/trust.json"
