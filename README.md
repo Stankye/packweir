@@ -4,6 +4,8 @@ Control what flows into your software supply chain.
 
 Packweir is an experimental package security gateway in Rust, licensed under MIT OR Apache-2.0. The name combines packages with a weir: a gate that regulates flow.
 
+The product direction is an open-source artifact repository manager with supply-chain assurance, license compliance, and investigation workflows. Proxying and optional caching come first; hosted repositories, promotion, and OCI distribution follow. See the [product scope and assurance model](docs/product-scope.md) for the intended lifecycle, standards mapping, threat coverage, and acceptance criteria.
+
 The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** The Windows build and all 30 current tests pass, including PostgreSQL/HTTP integration tests. Native package-manager conformance, Docker execution, and S3 integration remain unverified. This is an experimental source release; the required scanner integrations must be implemented and qualified before production enforcement.
 
 ## Current implementation

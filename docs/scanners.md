@@ -42,14 +42,26 @@ The command runner is **not an OS sandbox**. It does not enforce per-child CPU/m
 | OSV / vulnerability scanner | Bind package coordinates/version and advisory data revision; distinguish absent vulnerabilities from unsupported coverage. |
 | OSSGadget | Normalize selected tools individually; preserve heuristic confidence instead of treating all observations as deny rules. |
 | Syft / SBOM scanner | Preserve observations and coverage; do not label generated inventories as publisher attestations. |
+| License scanner / obligation collector | Preserve declared, detected, and reviewed license conclusions separately; bind file-level evidence, notices, exceptions, and unresolved expressions to content digests. Policy decisions also need the intended use/distribution context. |
 | Provenance / signature verifier | Verify cryptography and configured identity/build expectations; retain verification material. |
 | Ghidra | Analyze selected binaries headlessly; report unsupported formats and partial analysis; link outputs to embedded-file digests. |
 | Deobfuscator | Preserve original bytes and record transformation input/output digests. Runtime unpacking requires isolated execution. |
+| Assemblyline v4 (ASv4) | Submit only to a configured instance; bind submission/result references and extracted files to original digests; preserve service versions, findings, errors, and incomplete coverage. A platform score alone does not satisfy individual required checks. |
 | Agent | Produce a bounded investigation with evidence references, execution trace, and policy-compatible verdict. |
 
 These tool-specific adapters are not bundled yet. A command returning a success code is not sufficient: it must translate the actual tool semantics to the protocol outcome. Unavailable required adapters remain pending.
 
 `provenance` and `required_signature` passing results must include `verified_subject` equal to the requested digest and booleans `trusted_identity`, `signature_verified`, and `policy_matched`, all true. These are trusted-adapter reports, not cryptographic proofs checked by the gateway. A verifier must actually perform those checks before reporting them. Merely parsing SLSA JSON must return inconclusive.
+
+## Planned Assemblyline v4 integration
+
+Assemblyline v4 is an external analysis platform with an operator-selected set of services. The first integration can use an operator-owned protocol bridge. A later native asynchronous backend should submit work, persist its correlation state, and collect results without holding a gateway request or a scan lease open for the entire external analysis. This backend and its scheduling changes are not implemented.
+
+The integration must retain the original artifact digest, submission identifier, selected service/configuration revisions, report references, and parent/child file relationships. Normalize service findings independently, preserving partial results, skipped services, errors, and timeouts. A successful submission or low aggregate score is not proof that every required check ran. Results must still match the active evidence context before affecting delivery.
+
+Use a dedicated least-privilege instance credential and explicit upload/classification/retention policy. Uploading private packages, extracted binaries, or deobfuscated content requires an operator-configured destination and data-sharing policy. Packweir must not assume a remote instance includes Ghidra, dynamic execution, or any other optional service. Cache reuse must account for service configuration, signatures/rules revisions, and evidence freshness.
+
+Qualification needs a controlled Assemblyline instance plus fixtures for completed analysis, partial service failure, timeout, duplicate submission, retry/restart recovery, digest mismatch, changed policy during analysis, and extracted-child attribution. See the upstream [ingestion model](https://cybercentrecanada.github.io/assemblyline4_docs/integration/ingestion_method/), [REST API](https://cybercentrecanada.github.io/assemblyline4_docs/integration/rest/), and [authentication guidance](https://cybercentrecanada.github.io/assemblyline4_docs/integration/authentication/).
 
 ## Agent escalation
 
