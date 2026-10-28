@@ -1,6 +1,6 @@
 # Scanner adapter protocol v1
 
-Scanner adapters are trusted operator-owned executables configured in TOML. Package content never selects an executable, shell string, arguments, or environment. Versions, arguments, and configuration participate in the evidence fingerprint.
+Scanner adapters are trusted operator-owned executables configured in TOML. Package content never selects an executable, shell string, arguments, or environment. Versions, arguments, resource pins, and configuration participate in the evidence fingerprint. The default driver uses the protocol below; the built-in Sigstore driver constructs a Cosign invocation instead. See [tool integrations](integrations.md) for driver configuration and tool coverage.
 
 An adapter receives one JSON request on stdin:
 
@@ -18,6 +18,8 @@ An adapter receives one JSON request on stdin:
 ```
 
 The evidence bundle contains observed file inventory/SBOM documents, externally supplied documents, and all registered upstream identities for these bytes. An adapter must distinguish publisher claims, observed content, and client dependency graphs. Artifacts sharing bytes can have different source/identity expectations; provenance adapters must evaluate all supplied identities rather than approve only one alias.
+
+Adapters with configured pinned resources receive an additional `resources` field, mapping names to read-only snapshot paths and SHA-256 digests. The field is omitted when no resources are configured. Adapters opting into this extension must use the supplied snapshots; see [resource configuration](integrations.md#custom-adapters-and-pinned-resources).
 
 Return one JSON object on stdout:
 
@@ -49,7 +51,7 @@ The command runner is **not an OS sandbox**. It does not enforce per-child CPU/m
 | Assemblyline v4 (ASv4) | Submit only to a configured instance; bind submission/result references and extracted files to original digests; preserve service versions, findings, errors, and incomplete coverage. A platform score alone does not satisfy individual required checks. |
 | Agent | Produce a bounded investigation with evidence references, execution trace, and policy-compatible verdict. |
 
-These tool-specific adapters are not bundled yet. A command returning a success code is not sufficient: it must translate the actual tool semantics to the protocol outcome. Unavailable required adapters remain pending.
+These protocol wrappers are not bundled yet. Sigstore blob signatures have a separate built-in Cosign driver; the other tool-specific integrations remain operator-provided or planned. A command returning a success code is not sufficient: it must translate the actual tool semantics to the protocol outcome. Unavailable required adapters remain pending.
 
 `provenance` and `required_signature` passing results must include `verified_subject` equal to the requested digest and booleans `trusted_identity`, `signature_verified`, and `policy_matched`, all true. These are trusted-adapter reports, not cryptographic proofs checked by the gateway. A verifier must actually perform those checks before reporting them. Merely parsing SLSA JSON must return inconclusive.
 

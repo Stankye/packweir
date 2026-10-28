@@ -1,3 +1,4 @@
+pub use crate::process::read_bounded;
 use crate::{
     config::{CommandScanner, Config},
     inventory,
@@ -7,138 +8,131 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use chrono::{Duration, Utc};
-use serde::Deserialize;
-use std::{io::Write, process::Stdio, sync::Arc};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::Command,
-};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ScannerOutput {
-    outcome: Outcome,
-    details: serde_json::Value,
+pub struct ScannerOutput {
+    pub outcome: Outcome,
+    pub details: serde_json::Value,
     #[serde(default)]
-    references: Vec<String>,
+    pub references: Vec<String>,
 }
 
-#[cfg(windows)]
-struct RestorePermissions {
-    path: std::path::PathBuf,
-    permissions: std::fs::Permissions,
+#[derive(Default)]
+pub(crate) struct ReadOnlyInputs {
+    #[cfg(windows)]
+    permissions: Vec<(std::path::PathBuf, std::fs::Permissions)>,
 }
-#[cfg(windows)]
-impl Drop for RestorePermissions {
-    fn drop(&mut self) {
-        let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
+impl ReadOnlyInputs {
+    pub(crate) fn write(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+        std::fs::write(path, bytes)?;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        #[cfg(windows)]
+        self.permissions.push((path.into(), permissions.clone()));
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions)?;
+        Ok(())
     }
 }
 
-pub async fn read_bounded(reader: impl AsyncRead + Unpin, limit: u64) -> Result<Vec<u8>> {
-    let mut bytes = vec![];
-    reader.take(limit + 1).read_to_end(&mut bytes).await?;
-    ensure!(bytes.len() as u64 <= limit, "scanner output limit exceeded");
-    Ok(bytes)
+#[cfg(windows)]
+impl Drop for ReadOnlyInputs {
+    fn drop(&mut self) {
+        for (path, permissions) in &self.permissions {
+            let _ = std::fs::set_permissions(path, permissions.clone());
+        }
+    }
 }
 
-async fn command(
+/// Run one configured adapter without a database. The caller supplies an attributable evidence bundle.
+pub async fn run(
     scanner: &CommandScanner,
     job: &Job,
     bytes: &[u8],
     bundle: &serde_json::Value,
 ) -> Result<ScannerOutput> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("artifact");
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(bytes)?;
-    drop(file);
-    let mut permissions = std::fs::metadata(&path)?.permissions();
-    // Windows cannot remove a read-only input; restore its original permissions on every exit path.
-    #[cfg(windows)]
-    let _restore_permissions = RestorePermissions {
-        path: path.clone(),
-        permissions: permissions.clone(),
-    };
-    permissions.set_readonly(true);
-    std::fs::set_permissions(&path, permissions)?;
-    let bundle = serde_json::to_vec(bundle)?;
+    scanner.validate()?;
     ensure!(
-        bundle.len() <= 8 * 1024 * 1024,
+        crate::model::sha256(bytes) == job.subject,
+        "scanner subject does not match artifact bytes"
+    );
+    if let Some(expected) = &scanner.program_sha256 {
+        crate::process::verify_executable(&scanner.program, expected).await?;
+    }
+    let directory = tempfile::tempdir()?;
+    let mut inputs = ReadOnlyInputs::default();
+    let path = directory.path().join("artifact");
+    inputs.write(&path, bytes)?;
+    let mut resources = BTreeMap::new();
+    let mut total = 0;
+    for (name, resource) in &scanner.resources {
+        let file = tokio::fs::File::open(&resource.path).await?;
+        ensure!(
+            file.metadata().await?.is_file(),
+            "scanner resource must be a file"
+        );
+        let content = read_bounded(file, 8 * 1024 * 1024).await?;
+        total += content.len();
+        ensure!(
+            total <= 32 * 1024 * 1024,
+            "scanner resources exceed combined limit"
+        );
+        ensure!(
+            crate::model::sha256(&content) == resource.sha256,
+            "scanner resource digest mismatch"
+        );
+        let resource_path = directory.path().join(format!("resource-{name}"));
+        inputs.write(&resource_path, &content)?;
+        resources.insert(
+            name,
+            serde_json::json!({"path":resource_path,"sha256":resource.sha256}),
+        );
+    }
+    let serialized_bundle = serde_json::to_vec(bundle)?;
+    ensure!(
+        serialized_bundle.len() <= 8 * 1024 * 1024,
         "evidence bundle exceeds limit"
     );
-    let bundle_digest = crate::model::sha256(&bundle);
+    let bundle_digest = crate::model::sha256(&serialized_bundle);
     let bundle_path = directory.path().join("evidence.json");
-    std::fs::write(&bundle_path, &bundle)?;
-    let mut cmd = Command::new(&scanner.program);
-    cmd.args(&scanner.args)
-        .current_dir(directory.path())
-        .env_clear()
-        .envs(&scanner.environment)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    // Windows needs these to load executables; scanner configuration controls every other variable.
-    #[cfg(windows)]
-    for name in ["SYSTEMROOT", "WINDIR"] {
-        if let Ok(value) = std::env::var(name) {
-            cmd.env(name, value);
-        }
+    inputs.write(&bundle_path, &serialized_bundle)?;
+    if matches!(
+        scanner.driver,
+        crate::config::ScannerDriver::Sigstore { .. }
+    ) {
+        return crate::sigstore::verify(scanner, job, bundle, directory.path(), &bundle_digest)
+            .await;
     }
-    let mut child = cmd.spawn()?;
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    let input = serde_json::to_vec(
-        &serde_json::json!({"protocol_version":1,"subject":job.subject,
+    let mut input = serde_json::json!({"protocol_version":1,"subject":job.subject,
         "configuration":job.configuration,"filename":job.filename,"artifact_path":path,
-        "evidence_path":bundle_path,"evidence_digest":bundle_digest,"context_revision":job.context_revision}),
-    )?;
-    let execution = async {
-        let write = async {
-            stdin.write_all(&input).await?;
-            stdin.shutdown().await?;
-            drop(stdin);
-            Ok::<_, anyhow::Error>(())
-        };
-        let (_, output, _) = tokio::try_join!(
-            write,
-            read_bounded(stdout, 1024 * 1024),
-            read_bounded(stderr, 64 * 1024)
-        )?;
-        let status = child.wait().await?;
-        ensure!(status.success(), "scanner returned failure");
-        let output: ScannerOutput = serde_json::from_slice(&output)?;
-        if let Some(declared) = output
-            .details
-            .get("evidence_digest")
-            .and_then(|v| v.as_str())
-        {
-            ensure!(
-                declared == bundle_digest,
-                "scanner used a different evidence bundle"
-            );
-        }
-        Ok::<_, anyhow::Error>(output)
-    };
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(scanner.timeout_seconds),
-        execution,
-    )
-    .await;
-    // kill_on_drop protects cancellation; explicitly reap on timeout/error.
-    match result {
-        Ok(Ok(output)) => Ok(output),
-        other => {
-            let _ = child.kill().await;
-            match other {
-                Ok(Err(error)) => Err(error),
-                Err(_) => anyhow::bail!("scanner timed out"),
-                _ => unreachable!(),
-            }
-        }
+        "evidence_path":bundle_path,"evidence_digest":bundle_digest,"context_revision":job.context_revision});
+    if !resources.is_empty() {
+        input["resources"] = serde_json::to_value(resources)?;
     }
+    let output = crate::process::execute(
+        &scanner.program,
+        &scanner.args.iter().map(Into::into).collect::<Vec<_>>(),
+        &scanner.environment,
+        directory.path(),
+        &serde_json::to_vec(&input)?,
+        std::time::Duration::from_secs(scanner.timeout_seconds),
+    )
+    .await?;
+    ensure!(output.status.success(), "scanner returned failure");
+    let output: ScannerOutput = serde_json::from_slice(&output.stdout)?;
+    if let Some(declared) = output
+        .details
+        .get("evidence_digest")
+        .and_then(|v| v.as_str())
+    {
+        ensure!(
+            declared == bundle_digest,
+            "scanner used a different evidence bundle"
+        );
+    }
+    Ok(output)
 }
 
 fn evidence(
@@ -233,7 +227,7 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
         }
         let bundle = serde_json::json!({"identities":store.identities(&job.subject).await?,"documents":documents});
         for (name, scanner) in &config.scanners {
-            let mut e = match command(scanner, job, &bytes, &bundle).await {
+            let mut e = match run(scanner, job, &bytes, &bundle).await {
                 Ok(output) => {
                     let outcome = if name == "agent" && !agent_binding(&output.details) {
                         Outcome::Inconclusive

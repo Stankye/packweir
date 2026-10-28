@@ -76,6 +76,98 @@ pub struct CommandScanner {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// Optional executable pin; mandatory for built-in verification drivers.
+    pub program_sha256: Option<String>,
+    #[serde(default)]
+    pub resources: BTreeMap<String, PinnedResource>,
+    #[serde(default)]
+    pub driver: ScannerDriver,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedResource {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScannerDriver {
+    #[default]
+    Command,
+    Sigstore {
+        certificate_identity: String,
+        certificate_oidc_issuer: String,
+        /// Name of an entry in this scanner's resources map.
+        trusted_root: String,
+    },
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+impl CommandScanner {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            Path::new(&self.program).is_absolute(),
+            "scanner executable must be an absolute path"
+        );
+        ensure!(
+            !self.version.is_empty() && (1..=3600).contains(&self.timeout_seconds),
+            "scanner version and timeout between 1 and 3600 seconds required"
+        );
+        if let Some(digest) = &self.program_sha256 {
+            ensure!(valid_digest(digest), "invalid scanner executable SHA-256");
+        }
+        ensure!(
+            self.resources.len() <= 32,
+            "at most 32 scanner resources are supported"
+        );
+        for (name, resource) in &self.resources {
+            ensure!(
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)),
+                "invalid scanner resource name"
+            );
+            ensure!(
+                Path::new(&resource.path).is_absolute() && valid_digest(&resource.sha256),
+                "scanner resources require absolute paths and lowercase SHA-256 pins"
+            );
+        }
+        if let ScannerDriver::Sigstore {
+            certificate_identity,
+            certificate_oidc_issuer,
+            trusted_root,
+        } = &self.driver
+        {
+            ensure!(
+                self.program_sha256.is_some(),
+                "Sigstore requires an executable SHA-256 pin"
+            );
+            ensure!(
+                self.args.is_empty() && self.environment.is_empty(),
+                "Sigstore driver constructs its own arguments and environment"
+            );
+            ensure!(
+                !certificate_identity.trim().is_empty()
+                    && !certificate_oidc_issuer.trim().is_empty(),
+                "Sigstore requires exact certificate identity and OIDC issuer"
+            );
+            ensure!(
+                self.resources.contains_key(trusted_root),
+                "Sigstore trusted_root must name a pinned resource"
+            );
+        }
+        Ok(())
+    }
 }
 fn scanner_timeout() -> u64 {
     120
@@ -144,17 +236,15 @@ impl Config {
             }
         }
         for (name, scanner) in &self.scanners {
-            ensure!(
-                std::path::Path::new(&scanner.program).is_absolute(),
-                "scanner executable must be an absolute path"
-            );
+            scanner.validate()?;
             ensure!(
                 !["inventory", "archive_safety", "integrity"].contains(&name.as_str()),
                 "reserved scanner name"
             );
             ensure!(
-                !scanner.version.is_empty() && (1..=3600).contains(&scanner.timeout_seconds),
-                "scanner version and timeout between 1 and 3600 seconds required"
+                !matches!(scanner.driver, ScannerDriver::Sigstore { .. })
+                    || !["agent", "provenance"].contains(&name.as_str()),
+                "Sigstore blob signatures cannot stand in for agents or provenance checks"
             );
         }
         ensure!(

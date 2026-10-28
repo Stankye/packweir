@@ -60,6 +60,8 @@ Packweir currently has no complete license scanning, SPDX-expression evaluation,
 
 MITRE Hipcheck, OpenSSF tools, Microsoft OSSGadget, custom checks, and vulnerability/license scanners provide different observations. Each adapter needs a coverage contract, normalized outcomes, pinned configuration, and qualification fixtures. Tools must not silently substitute for each other.
 
+The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck custom plugins, the OSSGadget suite, OSV-Scanner/OSV-SCALIBR, deps.dev, SLSA Verifier, and graph exchange. The Cosign blob-signature driver and pinned adapter resources are implemented foundations; source/build provenance evaluation and the other tool-specific wrappers remain planned work.
+
 Assemblyline v4 (ASv4) is a planned external analysis integration. Its selected services should produce attributable findings and extracted-file relationships, not one universal approval score. Ghidra and deobfuscation may run through dedicated helpers or services where available. Preserve transformation chains; sandbox any execution. THOR and DRAKVUF-class execution remain specialized stretch integrations. See the [scanner protocol and Assemblyline design](scanners.md).
 
 Agentic checks should be conditional escalation for bounded questions raised by earlier evidence, with an attributable model/prompt/toolset/trace and explicit cost, time, and data-sharing limits. Uncertainty and unsupported conclusions remain visible. Human review is required where policy demands it; an agent cannot override mandatory integrity or trust checks. Automatic escalation, provider integration, and isolated tool execution are not implemented.

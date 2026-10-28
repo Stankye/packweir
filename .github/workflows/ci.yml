@@ -26,3 +26,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Qualify Sigstore verification with Cosign 3.1.4
+        env:
+          PACKWEIR_TEST_COSIGN: ${{ runner.temp }}/cosign
+        run: |
+          curl --fail --location --retry 3 --output "$PACKWEIR_TEST_COSIGN" https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64
+          echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  $PACKWEIR_TEST_COSIGN" | sha256sum --check --strict
+          chmod 0755 "$PACKWEIR_TEST_COSIGN"
+          cargo test --locked --all-targets real_cosign -- --ignored

@@ -492,7 +492,8 @@ async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
         "status":"experimental", "hosted_publishing":false,"oci_serving":false,
-        "checks":{"inventory":"builtin","provenance":"operator_adapter_required","agent":"operator_adapter_required"},
+        "checks":{"inventory":"builtin","provenance":"operator_adapter_required","agent":"operator_adapter_required",
+        "sigstore_blob_signature":"cosign_driver_requires_pinned_executable_and_trust_root"},
         "sbom":{"formats":["SPDX-2.3","CycloneDX-1.6"],"validation":"envelope_only"}}),
     )
 }
@@ -530,7 +531,7 @@ async fn ingest(
             "sbom" => {
                 inventory::sbom_format(&input.document)?;
             }
-            "attestation" | "vex" | "lockfile" => {}
+            "attestation" | "vex" | "lockfile" | "sigstore_bundle" => {}
             _ => anyhow::bail!("unsupported document kind"),
         }
         let blob = state

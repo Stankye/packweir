@@ -6,7 +6,7 @@ Packweir is an experimental package security gateway in Rust, licensed under MIT
 
 The product direction is an open-source artifact repository manager with supply-chain assurance, license compliance, and investigation workflows. Proxying and optional caching come first; hosted repositories, promotion, and OCI distribution follow. See the [product scope and assurance model](docs/product-scope.md) for the intended lifecycle, standards mapping, threat coverage, and acceptance criteria.
 
-The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** The Windows build and all 30 current tests pass, including PostgreSQL/HTTP integration tests. Native package-manager conformance, Docker execution, and S3 integration remain unverified. This is an experimental source release; the required scanner integrations must be implemented and qualified before production enforcement.
+The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** The Windows build and current test suite pass, including PostgreSQL/HTTP integration tests. Native package-manager conformance, Docker execution, and S3 integration remain unverified. This is an experimental source release; each required integration and deployment must be qualified before production enforcement.
 
 ## Current implementation
 
@@ -19,6 +19,7 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Bounded archive inventory, native-binary identification, and observed CycloneDX 1.6/SPDX 2.3 file inventories.
 - Attributable document ingestion/export, explicit unverified status, and invalidation of evidence when external documents or artifact identities change.
 - A bounded command-adapter protocol for external scanners, provenance verifiers, and future agents.
+- A Cosign-backed Sigstore blob-signature driver with exact signer/issuer policy and pinned executable/trust root; digest-pinned resource snapshots for custom adapters.
 
 The sample configuration requires inventory and archive-safety checks only. **This is a bootstrap policy, not malware detection or a provenance guarantee.** Configure trusted adapters and add their check names to `policy.required` before depending on those capabilities. Requiring an unavailable integration keeps the artifact pending.
 
@@ -84,7 +85,7 @@ Every `/api/v1` request requires `Authorization: Bearer <admin-token>`.
 | POST | `/api/v1/artifacts/{digest}/rescan` | Expire current evidence and enqueue reanalysis |
 | POST | `/api/v1/prefetch` | Stage a repository-relative package path |
 
-Document ingestion accepts `{"kind":"sbom","origin":"publisher_declared","document":{...}}`. Kinds are `sbom`, `attestation`, `vex`, and `lockfile`; external origins are `publisher_declared` and `client_resolved`. Ingested SBOMs receive envelope checks only, not full schema or semantic validation. Ingesting a signature or provenance statement does not verify it or approve an artifact.
+Document ingestion accepts `{"kind":"sbom","origin":"publisher_declared","document":{...}}`. Kinds are `sbom`, `attestation`, `sigstore_bundle`, `vex`, and `lockfile`; external origins are `publisher_declared` and `client_resolved`. Ingested SBOMs receive envelope checks only, not full schema or semantic validation. Ingesting a signature or provenance statement does not verify it or approve an artifact. See [tool integrations](docs/integrations.md) to configure and require Sigstore verification.
 
 ## Verification and remaining work
 
@@ -106,4 +107,4 @@ The full suite includes policy, archive expansion/traversal, binary inventory, i
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 
-See [scanner protocol](docs/scanners.md) for the external-tool trust boundary and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval/cryptographic verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing, repository groups, RBAC, promotion, a UI, and VM sandboxing remain unfinished.
+See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing, repository groups, RBAC, promotion, a UI, and VM sandboxing remain unfinished.

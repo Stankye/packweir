@@ -284,3 +284,141 @@ async fn extensionless_cargo_downloads_still_require_approval(pool: sqlx::PgPool
     assert_eq!(jobs, 1);
     server.abort();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires PACKWEIR_TEST_COSIGN pointing to Cosign 3.1.4"]
+async fn real_cosign_bundle_ingestion_gates_delivery_and_changed_trust(pool: sqlx::PgPool) {
+    use packweir::{
+        config::CommandScanner,
+        model::{Ecosystem, sha256},
+    };
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    let payload = include_bytes!("fixtures/sigstore/cosign_checksums.txt").to_vec();
+    let digest = sha256(&payload);
+    let served = payload.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/checksums.txt",
+                get(move || {
+                    let copy = served.clone();
+                    async move { copy }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let program = std::env::var("PACKWEIR_TEST_COSIGN").unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/sigstore/trusted_root.json");
+    let mut settings = config(temp.path(), &origin);
+    settings.repositories.get_mut("npm").unwrap().ecosystem = Ecosystem::Maven;
+    let verifier: CommandScanner = serde_json::from_value(json!({
+        "program":program, "program_sha256":sha256(&std::fs::read(&program).unwrap()), "version":"3.1.4", "timeout_seconds":20,
+        "resources":{"root":{"path":root, "sha256":sha256(&std::fs::read(&root).unwrap())}},
+        "driver":{"kind":"sigstore", "trusted_root":"root", "certificate_identity":"keyless@projectsigstore.iam.gserviceaccount.com", "certificate_oidc_issuer":"https://accounts.google.com"}
+    })).unwrap();
+    settings
+        .scanners
+        .insert("required_signature".into(), verifier);
+    settings.policy.required.push("required_signature".into());
+    settings.validate().unwrap();
+    let settings = Arc::new(settings);
+    let store = Store { pool };
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let app = gateway::router(AppState::new(
+        settings.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let download = || {
+        Request::builder()
+            .uri("/r/npm/checksums.txt")
+            .header("authorization", format!("Bearer {}", "r".repeat(32)))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone().oneshot(download()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(download()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let signature: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "fixtures/sigstore/cosign_checksums.txt.sigstore.json"
+    ))
+    .unwrap();
+    let ingested = app.clone().oneshot(Request::builder()
+        .method("POST").uri(format!("/api/v1/artifacts/{digest}/documents"))
+        .header("authorization", format!("Bearer {}", "a".repeat(32))).header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({"kind":"sigstore_bundle", "origin":"publisher_declared", "document":signature})).unwrap())).unwrap()).await.unwrap();
+    assert_eq!(ingested.status(), StatusCode::CREATED);
+    assert!(
+        store
+            .evidence(&digest, &settings.fingerprint())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        app.clone().oneshot(download()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    let approved = app.oneshot(download()).await.unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    assert_eq!(
+        approved
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        payload
+    );
+    let mut changed = (*settings).clone();
+    if let packweir::config::ScannerDriver::Sigstore {
+        certificate_identity,
+        ..
+    } = &mut changed
+        .scanners
+        .get_mut("required_signature")
+        .unwrap()
+        .driver
+    {
+        *certificate_identity = "attacker@example.test".into();
+    }
+    let changed = Arc::new(changed);
+    let app = gateway::router(AppState::new(
+        changed.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    assert_eq!(
+        app.clone().oneshot(download()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(changed, store, blobs, true).await.unwrap();
+    assert_eq!(
+        app.oneshot(download()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    upstream.abort();
+}
