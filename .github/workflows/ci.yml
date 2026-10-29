@@ -34,3 +34,27 @@ jobs:
           echo "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  $PACKWEIR_TEST_COSIGN" | sha256sum --check --strict
           chmod 0755 "$PACKWEIR_TEST_COSIGN"
           cargo test --locked --all-targets real_cosign -- --ignored
+      - name: Qualify SLSA, OSV, and Hipcheck drivers
+        env:
+          PACKWEIR_TEST_SLSA: ${{ runner.temp }}/slsa-verifier
+          PACKWEIR_TEST_OSV: ${{ runner.temp }}/osv-scanner
+          PACKWEIR_TEST_HIPCHECK: ${{ runner.temp }}/hipcheck/hc
+          PACKWEIR_TEST_HIPCHECK_IDENTITY: ${{ runner.temp }}/identity/identity
+          PACKWEIR_TEST_HIPCHECK_GIT: ${{ runner.temp }}/git-plugin/git
+        run: |
+          curl --fail --location --retry 3 --output "$PACKWEIR_TEST_SLSA" https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-amd64
+          echo "946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339  $PACKWEIR_TEST_SLSA" | sha256sum --check --strict
+          curl --fail --location --retry 3 --output "$PACKWEIR_TEST_OSV" https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          echo "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b  $PACKWEIR_TEST_OSV" | sha256sum --check --strict
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/hipcheck.tar.xz" https://github.com/mitre/hipcheck/releases/download/hipcheck-v3.15.0/hipcheck-x86_64-unknown-linux-gnu.tar.xz
+          echo "1596768a44009380d92418615810549f6e204f2382609c97202fa3287a59e5b5  $RUNNER_TEMP/hipcheck.tar.xz" | sha256sum --check --strict
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/identity.tar.xz" https://github.com/mitre/hipcheck/releases/download/identity-v0.6.0/identity-x86_64-unknown-linux-gnu.tar.xz
+          echo "e33ea39a11d9ff9b1a30bf30d1bdb3ddf7210fb64e79c1f759e336953f826593  $RUNNER_TEMP/identity.tar.xz" | sha256sum --check --strict
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/git-plugin.tar.xz" https://github.com/mitre/hipcheck/releases/download/git-v0.6.0/git-x86_64-unknown-linux-gnu.tar.xz
+          echo "0c7a97ffdee343771775198c9e1d07b62c0eb3a0b6245db478802d76ebd6abd4  $RUNNER_TEMP/git-plugin.tar.xz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/hipcheck" "$RUNNER_TEMP/identity" "$RUNNER_TEMP/git-plugin"
+          tar -xJf "$RUNNER_TEMP/hipcheck.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/hipcheck"
+          tar -xJf "$RUNNER_TEMP/identity.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/identity"
+          tar -xJf "$RUNNER_TEMP/git-plugin.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/git-plugin"
+          chmod 0755 "$PACKWEIR_TEST_SLSA" "$PACKWEIR_TEST_OSV"
+          cargo test --locked --test native_tools -- --ignored

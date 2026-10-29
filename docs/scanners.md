@@ -33,6 +33,8 @@ Return one JSON object on stdout:
 
 Outcomes are `pass`, `fail`, `inconclusive`, `unsupported`, and `error`. A nonzero exit, malformed JSON, timeout, excessive output, or missing required bindings cannot approve a check. Stdout is bounded to 1 MiB and stderr to 64 KiB. The environment is cleared except configured variables and Windows loader variables. Input bytes are read-only. Use absolute executable paths and explicitly configured tool dependencies.
 
+Outputs can include an optional top-level RFC3339 `valid_until`. The worker caps evidence expiry to that time and the configured TTL; it cannot extend the TTL. This binds OSV evidence to the earliest database expiration. Built-in drivers normalize their tool-specific nonzero exits before returning this protocol result: an OSV finding exit is not a generic command success.
+
 The command runner is **not an OS sandbox**. It does not enforce per-child CPU/memory quotas or contain grandchildren. Run untrusted package execution only through an operator-managed isolated runner, never directly inside the database-connected worker. The built-in inspector never executes package code. Deep binary parsers should also run behind an appropriate isolation boundary.
 
 ## Integration obligations
@@ -51,7 +53,7 @@ The command runner is **not an OS sandbox**. It does not enforce per-child CPU/m
 | Assemblyline v4 (ASv4) | Submit only to a configured instance; bind submission/result references and extracted files to original digests; preserve service versions, findings, errors, and incomplete coverage. A platform score alone does not satisfy individual required checks. |
 | Agent | Produce a bounded investigation with evidence references, execution trace, and policy-compatible verdict. |
 
-These protocol wrappers are not bundled yet. Sigstore blob signatures have a separate built-in Cosign driver; the other tool-specific integrations remain operator-provided or planned. A command returning a success code is not sufficient: it must translate the actual tool semantics to the protocol outcome. Unavailable required adapters remain pending.
+Built-in drivers cover Sigstore blob signatures, source-bound SLSA Verifier checks, offline OSV mapped-package checks, and Hipcheck policies/custom plugins. See [driver configuration and limits](native-drivers.md). Other tool-specific protocol wrappers remain operator-provided or planned. A command returning a success code is not sufficient: it must translate the actual tool semantics to the protocol outcome. Unavailable required adapters remain pending.
 
 `provenance` and `required_signature` passing results must include `verified_subject` equal to the requested digest and booleans `trusted_identity`, `signature_verified`, and `policy_matched`, all true. These are trusted-adapter reports, not cryptographic proofs checked by the gateway. A verifier must actually perform those checks before reporting them. Merely parsing SLSA JSON must return inconclusive.
 

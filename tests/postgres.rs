@@ -1,4 +1,5 @@
 //! Requires PostgreSQL with CREATE DATABASE privilege; CI provides an isolated service.
+mod support;
 use axum::{
     Router,
     body::Body,
@@ -421,4 +422,182 @@ async fn real_cosign_bundle_ingestion_gates_delivery_and_changed_trust(pool: sql
         StatusCode::SERVICE_UNAVAILABLE
     );
     upstream.abort();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn native_driver_evidence_gates_delivery_and_expires_with_its_database(pool: sqlx::PgPool) {
+    use packweir::{
+        config::{
+            CommandScanner, OsvDatabase, PackageBinding, PinnedResource, ScannerDriver,
+            SourceBinding,
+        },
+        model::{Ecosystem, sha256},
+    };
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    let temp = tempfile::tempdir().unwrap();
+    let bytes = b"fixture";
+    let digest = sha256(bytes);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/fixture.bin", get(|| async { "fixture" })),
+        )
+        .await
+        .unwrap()
+    });
+    let mut settings = config(temp.path(), &origin);
+    settings.repositories.get_mut("npm").unwrap().ecosystem = Ecosystem::Maven;
+    let binding = SourceBinding {
+        repository: "npm".into(),
+        origin: format!("{origin}fixture.bin"),
+        source_uri: "https://github.com/example/project".into(),
+        source_revision: "1".repeat(40),
+    };
+    let builder = "https://github.com/example/builder/.github/workflows/build.yml@refs/tags/v1.0.0";
+    let resource = |name: &str, content: Vec<u8>| {
+        let path = temp.path().join(name);
+        std::fs::write(&path, &content).unwrap();
+        PinnedResource {
+            path: path.to_string_lossy().into_owned(),
+            sha256: sha256(&content),
+        }
+    };
+    let adapter = |driver, name: &str, report| CommandScanner {
+        program: support::fixture_program().to_string_lossy().into_owned(),
+        program_sha256: Some(sha256(&std::fs::read(support::fixture_program()).unwrap())),
+        version: "test-double".into(),
+        timeout_seconds: 5,
+        args: vec![],
+        environment: BTreeMap::new(),
+        resources: BTreeMap::from([(
+            "report".into(),
+            resource(name, serde_json::to_vec(&report).unwrap()),
+        )]),
+        driver,
+    };
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("TEST.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"{}").unwrap();
+    let database = resource("npm.zip", zip.finish().unwrap().into_inner());
+    let expires = Utc::now() + Duration::minutes(5);
+    settings.scanners.insert("vulnerabilities".into(),adapter(ScannerDriver::Osv {packages:vec![PackageBinding {repository:binding.repository.clone(),origin:binding.origin.clone(),ecosystem:"Maven".into(),name:"dev.packweir:fixture".into(),version:"1.0.0".into()}],
+        databases:BTreeMap::from([("Maven".into(),OsvDatabase {path:database.path,sha256:database.sha256,revision:"test".into(),published_at:Utc::now()-Duration::hours(1),expires_at:expires})])},"osv-report.json",
+        json!({"results":[{"packages":[{"package":{"ecosystem":"Maven","name":"dev.packweir:fixture","version":"1.0.0"},"vulnerabilities":[]}]}]})));
+    settings.scanners.insert("provenance".into(),adapter(ScannerDriver::Slsa {builder_id:builder.into(),sources:vec![binding.clone()]},"provenance-report.json",
+        json!({"_type":"https://in-toto.io/Statement/v0.1","predicateType":"https://slsa.dev/provenance/v0.2","subject":[{"digest":{"sha256":digest}}],"predicate":{"builder":{"id":builder},"invocation":{"configSource":{"uri":"git+https://github.com/example/project@refs/heads/main","digest":{"sha1":binding.source_revision}}}}})));
+    let mut hipcheck = adapter(
+        ScannerDriver::Hipcheck {
+            policy: "policy".into(),
+            execution: "execution".into(),
+            required_analyses: vec!["example/custom".into()],
+            sources: vec![binding.clone()],
+            plugins: BTreeMap::from([(
+                "example/custom".into(),
+                PinnedResource {
+                    path: support::fixture_program().to_string_lossy().into_owned(),
+                    sha256: sha256(&std::fs::read(support::fixture_program()).unwrap()),
+                },
+            )]),
+        },
+        "hipcheck-report.json",
+        json!({"repo_owner":"example","repo_name":"project","repo_head":binding.source_revision,"passing":[{"name":"example/custom","passed":true}],"failing":[],"errored":[],"recommendation":{"kind":"Pass"}}),
+    );
+    hipcheck
+        .resources
+        .insert("policy".into(), resource("policy.kdl", b"test".to_vec()));
+    hipcheck
+        .resources
+        .insert("execution".into(), resource("exec.kdl", b"test".to_vec()));
+    settings.scanners.insert("source_posture".into(), hipcheck);
+    settings.policy.required.extend([
+        "provenance".into(),
+        "vulnerabilities".into(),
+        "source_posture".into(),
+    ]);
+    settings.validate().unwrap();
+    let settings = Arc::new(settings);
+    let store = Store { pool };
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let app = gateway::router(AppState::new(
+        settings.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let request = || {
+        Request::builder()
+            .uri("/r/npm/fixture.bin")
+            .header("authorization", format!("Bearer {}", "r".repeat(32)))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let document = blobs
+        .put(serde_json::to_vec(&json!({"mock":"attestation"})).unwrap())
+        .await
+        .unwrap();
+    store
+        .document(&digest, "attestation", "publisher_declared", &document)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let evidence = store
+        .evidence(&digest, &settings.fingerprint())
+        .await
+        .unwrap();
+    assert_eq!(
+        evidence
+            .iter()
+            .find(|e| e.check == "vulnerabilities")
+            .unwrap()
+            .expires_at
+            .timestamp_millis(),
+        expires.timestamp_millis()
+    );
+    let inspection = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/artifacts/{digest}"))
+                .header("authorization", format!("Bearer {}", "a".repeat(32)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let inspected: serde_json::Value =
+        serde_json::from_slice(&inspection.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(inspected["identities"][0]["origin"], binding.origin);
+    sqlx::query("UPDATE evidence SET expires_at=now()-interval '1 second' WHERE subject=$1 AND check_name='vulnerabilities'").bind(&digest).execute(&store.pool).await.unwrap();
+    assert_eq!(
+        app.oneshot(request()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    server.abort();
 }

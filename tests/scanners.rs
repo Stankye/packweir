@@ -6,27 +6,9 @@ use packweir::{
     store::Job,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
-
-fn fixture_program() -> &'static Path {
-    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
-    PROGRAM.get_or_init(|| {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scanner-fixture");
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join(format!("scanner-fixture{}", std::env::consts::EXE_SUFFIX));
-        let status = std::process::Command::new("rustc")
-            .args(["--edition=2024", "tests/support/scanner_fixture.rs", "-o"])
-            .arg(&path)
-            .status()
-            .expect("Rust compiler required for test subprocess fixture");
-        assert!(status.success());
-        path
-    })
-}
+use std::{collections::BTreeMap, path::Path};
+mod support;
+use support::fixture_program;
 
 pub fn signature(result: &str, bytes: &[u8]) -> Value {
     json!({"kind":"sigstore_bundle", "origin":"publisher_declared", "document":{

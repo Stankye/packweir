@@ -41,6 +41,7 @@ pub(crate) async fn verify(
         details: json!({"reason":"no acceptable Sigstore blob signature verified", "evidence_digest":evidence_digest,
             "verification_scope":"sigstore_blob_signature", "candidate_count":candidates.len()}),
         references: vec![],
+        valid_until: None,
     };
     if candidates.len() > 8 {
         result.details["reason"] = json!("Sigstore bundle candidate limit exceeded");
@@ -127,6 +128,7 @@ pub(crate) async fn verify(
                     "bundle_digest":digest, "trusted_root_digest":scanner.resources[trusted_root].sha256,
                     "program_digest":scanner.program_sha256, "evidence_digest":evidence_digest}),
                 references: vec![format!("sha256:{digest}")],
+                valid_until: None,
             });
         }
     }

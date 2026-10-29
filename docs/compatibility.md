@@ -16,7 +16,7 @@ Cache hits reuse retained original bytes and reevaluate current policy. They do 
 
 Current jobs are retried up to three times per queued run with lease recovery; exhausted expired leases become failed jobs. Evidence-context changes and manual rescans invalidate existing findings, and lease ownership/context checks prevent old workers from committing stale results. Adapters have wall-clock/output limits; full worker resource scheduling and isolation remain external responsibilities.
 
-Sigstore v0.3 blob-signature verification is available through a Cosign-backed driver with pinned executable/trust-root inputs and exact signer/issuer policy. Bundle discovery, repository-specific signer routing, and source/build provenance verification remain separate work. See the [integration catalog](integrations.md) for configuration and tool-specific status.
+Sigstore v0.3 blob signatures, selected source-bound SLSA artifact verification, offline OSV mapped-package checks, and Hipcheck source policies are available through built-in drivers. Discovery, automatic identity mapping, additional builder/statement support, and package-manager-native signatures remain separate work. See the [integration catalog](integrations.md) and [native driver limits](native-drivers.md) for configuration and tool-specific status.
 
 ## Milestones
 

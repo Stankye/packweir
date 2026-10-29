@@ -4,7 +4,11 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, net::SocketAddr, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
+    path::Path,
+};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +106,116 @@ pub enum ScannerDriver {
         /// Name of an entry in this scanner's resources map.
         trusted_root: String,
     },
+    Slsa {
+        builder_id: String,
+        sources: Vec<SourceBinding>,
+    },
+    Osv {
+        packages: Vec<PackageBinding>,
+        databases: BTreeMap<String, OsvDatabase>,
+    },
+    Hipcheck {
+        policy: String,
+        execution: String,
+        required_analyses: Vec<String>,
+        sources: Vec<SourceBinding>,
+        plugins: BTreeMap<String, PinnedResource>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceBinding {
+    pub repository: String,
+    pub origin: String,
+    /// Canonical HTTPS GitHub repository URL, without a ref or .git suffix.
+    pub source_uri: String,
+    pub source_revision: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageBinding {
+    pub repository: String,
+    pub origin: String,
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OsvDatabase {
+    pub path: String,
+    pub sha256: String,
+    pub revision: String,
+    pub published_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn validate_binding(repository: &str, origin: &str) -> Result<()> {
+    ensure!(
+        !repository.is_empty()
+            && repository
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "invalid binding repository"
+    );
+    let url = Url::parse(origin)?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none(),
+        "binding origin must be an HTTP(S) URL without credentials"
+    );
+    ensure!(
+        url.as_str() == origin,
+        "binding origin must use the canonical artifact URL"
+    );
+    Ok(())
+}
+
+fn validate_sources(sources: &[SourceBinding]) -> Result<()> {
+    ensure!(
+        !sources.is_empty() && sources.len() <= 1024,
+        "between 1 and 1024 source bindings required"
+    );
+    let mut identities = BTreeSet::new();
+    for source in sources {
+        validate_binding(&source.repository, &source.origin)?;
+        ensure!(
+            identities.insert((&source.repository, &source.origin)),
+            "duplicate source binding"
+        );
+        let uri = Url::parse(&source.source_uri)?;
+        let parts: Vec<_> = uri.path().trim_start_matches('/').split('/').collect();
+        ensure!(
+            uri.scheme() == "https"
+                && uri.host_str() == Some("github.com")
+                && uri.port().is_none()
+                && uri.username().is_empty()
+                && uri.password().is_none()
+                && uri.query().is_none()
+                && uri.fragment().is_none()
+                && parts.len() == 2
+                && parts.iter().all(|p| !p.is_empty()
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+                && !uri.path().ends_with(".git")
+                && uri.as_str() == source.source_uri,
+            "source_uri must be a canonical HTTPS GitHub owner/repository URL"
+        );
+        ensure!(
+            source.source_revision.len() == 40
+                && source
+                    .source_revision
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "source_revision must be a complete lowercase Git commit SHA-1"
+        );
+    }
+    Ok(())
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -165,6 +279,148 @@ impl CommandScanner {
                 self.resources.contains_key(trusted_root),
                 "Sigstore trusted_root must name a pinned resource"
             );
+        }
+        if !matches!(self.driver, ScannerDriver::Command) {
+            ensure!(
+                self.program_sha256.is_some() && self.args.is_empty(),
+                "built-in drivers require a pinned executable and construct their own arguments"
+            );
+        }
+        match &self.driver {
+            ScannerDriver::Slsa {
+                builder_id,
+                sources,
+            } => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "SLSA driver controls its environment"
+                );
+                ensure!(
+                    builder_id.starts_with("https://github.com/")
+                        && builder_id.contains("@refs/tags/")
+                        && !builder_id.ends_with('/'),
+                    "SLSA requires an exact versioned GitHub builder identity"
+                );
+                validate_sources(sources)?;
+            }
+            ScannerDriver::Osv {
+                packages,
+                databases,
+            } => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "OSV driver controls its offline database environment"
+                );
+                ensure!(
+                    !packages.is_empty() && packages.len() <= 1024,
+                    "between 1 and 1024 package bindings required"
+                );
+                let mut identities = BTreeSet::new();
+                for package in packages {
+                    validate_binding(&package.repository, &package.origin)?;
+                    ensure!(
+                        identities.insert((&package.repository, &package.origin)),
+                        "duplicate package binding"
+                    );
+                    ensure!(
+                        ["npm", "PyPI", "crates.io", "Maven", "NuGet"]
+                            .contains(&package.ecosystem.as_str()),
+                        "unsupported OSV ecosystem"
+                    );
+                    ensure!(
+                        !package.name.trim().is_empty() && !package.version.trim().is_empty(),
+                        "OSV package name and exact version required"
+                    );
+                    ensure!(
+                        package.name.len() <= 512
+                            && package
+                                .name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"@/:._-".contains(&b)),
+                        "invalid OSV package name"
+                    );
+                    ensure!(
+                        package.version.len() <= 256
+                            && package.version.bytes().any(|b| b.is_ascii_digit())
+                            && package
+                                .version
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"._-+!".contains(&b)),
+                        "OSV mappings require literal versions, not ranges or tags"
+                    );
+                    ensure!(
+                        package.ecosystem != "Maven"
+                            || package.name.split(':').count() == 2
+                                && package.name.split(':').all(|p| !p.is_empty()),
+                        "Maven mappings require group:artifact names"
+                    );
+                    ensure!(
+                        databases.contains_key(&package.ecosystem),
+                        "OSV requires a pinned database for each mapped ecosystem"
+                    );
+                }
+                ensure!(
+                    databases.len() <= 5,
+                    "at most five OSV ecosystem databases supported"
+                );
+                for (ecosystem, database) in databases {
+                    ensure!(
+                        ["npm", "PyPI", "crates.io", "Maven", "NuGet"]
+                            .contains(&ecosystem.as_str()),
+                        "unsupported OSV database ecosystem"
+                    );
+                    ensure!(
+                        Path::new(&database.path).is_absolute()
+                            && valid_digest(&database.sha256)
+                            && !database.revision.trim().is_empty(),
+                        "OSV databases require absolute paths, SHA-256 pins and revisions"
+                    );
+                    ensure!(
+                        database.expires_at > database.published_at,
+                        "invalid OSV database validity interval"
+                    );
+                }
+            }
+            ScannerDriver::Hipcheck {
+                policy,
+                execution,
+                required_analyses,
+                sources,
+                plugins,
+            } => {
+                ensure!(
+                    self.resources.contains_key(policy) && self.resources.contains_key(execution),
+                    "Hipcheck policy and execution must name pinned resources"
+                );
+                ensure!(
+                    !required_analyses.is_empty()
+                        && required_analyses.len() <= 32
+                        && required_analyses.iter().all(|a| a.split('/').count() == 2
+                            && a.split('/').all(|p| !p.is_empty()
+                                && p.bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)))),
+                    "Hipcheck requires explicit publisher/plugin analysis names"
+                );
+                ensure!(
+                    required_analyses.iter().collect::<BTreeSet<_>>().len()
+                        == required_analyses.len(),
+                    "duplicate required Hipcheck analysis"
+                );
+                validate_sources(sources)?;
+                ensure!(
+                    !plugins.is_empty()
+                        && plugins.len() <= 32
+                        && required_analyses.iter().all(|a| plugins.contains_key(a)),
+                    "Hipcheck requires pinned binaries for every required analysis"
+                );
+                for plugin in plugins.values() {
+                    ensure!(
+                        Path::new(&plugin.path).is_absolute() && valid_digest(&plugin.sha256),
+                        "Hipcheck plugin binaries require absolute paths and SHA-256 pins"
+                    );
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -245,6 +501,17 @@ impl Config {
                 !matches!(scanner.driver, ScannerDriver::Sigstore { .. })
                     || !["agent", "provenance"].contains(&name.as_str()),
                 "Sigstore blob signatures cannot stand in for agents or provenance checks"
+            );
+            ensure!(
+                !matches!(
+                    scanner.driver,
+                    ScannerDriver::Osv { .. } | ScannerDriver::Hipcheck { .. }
+                ) || !["agent", "provenance", "required_signature"].contains(&name.as_str()),
+                "analysis drivers cannot stand in for cryptographic verification or agents"
+            );
+            ensure!(
+                !matches!(scanner.driver, ScannerDriver::Slsa { .. }) || name != "agent",
+                "SLSA verification cannot stand in for an agent"
             );
         }
         ensure!(

@@ -1,5 +1,6 @@
 pub mod bounds;
 pub mod config;
+mod drivers;
 pub mod gateway;
 pub mod inventory;
 pub mod model;

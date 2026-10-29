@@ -22,6 +22,7 @@ pub async fn read_bounded(reader: impl AsyncRead + Unpin, limit: u64) -> Result<
 pub struct Output {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 pub async fn execute(
@@ -58,7 +59,7 @@ pub async fn execute(
             drop(stdin);
             Ok::<_, anyhow::Error>(())
         };
-        let (_, stdout, _) = tokio::try_join!(
+        let (_, stdout, stderr) = tokio::try_join!(
             write,
             read_bounded(stdout, 1024 * 1024),
             read_bounded(stderr, 64 * 1024)
@@ -66,6 +67,7 @@ pub async fn execute(
         Ok::<_, anyhow::Error>(Output {
             status: child.wait().await?,
             stdout,
+            stderr,
         })
     };
     match tokio::time::timeout(timeout, execution).await {

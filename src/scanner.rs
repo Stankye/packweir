@@ -18,6 +18,8 @@ pub struct ScannerOutput {
     pub details: serde_json::Value,
     #[serde(default)]
     pub references: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Default)]
@@ -104,6 +106,9 @@ pub async fn run(
     ) {
         return crate::sigstore::verify(scanner, job, bundle, directory.path(), &bundle_digest)
             .await;
+    }
+    if !matches!(scanner.driver, crate::config::ScannerDriver::Command) {
+        return crate::drivers::run(scanner, job, bundle, directory.path(), &bundle_digest).await;
     }
     let mut input = serde_json::json!({"protocol_version":1,"subject":job.subject,
         "configuration":job.configuration,"filename":job.filename,"artifact_path":path,
@@ -236,6 +241,12 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
                     };
                     let mut e =
                         evidence(config, job, name, &scanner.version, outcome, output.details);
+                    if let Some(valid_until) = output.valid_until {
+                        e.expires_at = e.expires_at.min(valid_until);
+                        if valid_until <= Utc::now() {
+                            e.outcome = Outcome::Inconclusive;
+                        }
+                    }
                     e.references = output.references;
                     e
                 }

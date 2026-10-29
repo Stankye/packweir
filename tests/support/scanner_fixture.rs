@@ -6,6 +6,62 @@ use std::{
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if matches!(
+        args.first().map(String::as_str),
+        Some("verify-artifact" | "scan" | "check")
+    ) {
+        assert!(std::env::var_os("DATABASE_URL").is_none());
+        match args[0].as_str() {
+            "verify-artifact" => {
+                assert_eq!(args.len(), 6);
+                assert!(args[1].starts_with("--provenance-path="));
+                assert!(args[2].starts_with("--source-uri=github.com/"));
+                assert!(args[3].starts_with("--builder-id=https://github.com/"));
+                assert_eq!(args[4], "--print-provenance");
+                if let Ok(expected) = std::fs::read("resource-raw_expected") {
+                    assert_eq!(std::fs::read(&args[1][18..]).unwrap(), expected);
+                }
+            }
+            "scan" => {
+                assert_eq!(args.len(), 11);
+                for flag in [
+                    "source",
+                    "--offline",
+                    "--all-packages",
+                    "--no-resolve",
+                    "--no-call-analysis=go",
+                    "--no-call-analysis=rust",
+                ] {
+                    assert!(args.iter().any(|arg| arg == flag));
+                }
+                assert!(std::env::var_os("OSV_SCALIBR_LOCAL_DB_CACHE_DIRECTORY").is_some());
+            }
+            "check" => {
+                assert_eq!(args.len(), 10);
+                for flag in [
+                    "--target=repo",
+                    "--format=debug",
+                    "--color=never",
+                    "--verbosity=quiet",
+                ] {
+                    assert!(args.iter().any(|arg| arg == flag));
+                }
+                assert!(args.iter().any(|arg| arg.starts_with("--policy=")));
+                assert!(args.iter().any(|arg| arg.starts_with("--exec=")));
+                assert!(args.iter().any(|arg| arg.starts_with("--ref=")));
+            }
+            _ => unreachable!(),
+        }
+        std::io::stdout()
+            .write_all(&std::fs::read("resource-report").unwrap())
+            .unwrap();
+        let code = std::fs::read_to_string("resource-status")
+            .unwrap_or_else(|_| "0".into())
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("protocol") {
         let mut input = String::new();
         std::io::stdin().read_to_string(&mut input).unwrap();

@@ -4,6 +4,8 @@ Packweir separates artifact identity, verified signatures/provenance, source pos
 
 ## Implemented foundation
 
+In addition to the Sigstore driver below, [native SLSA, OSV, and Hipcheck drivers](native-drivers.md) now implement explicit source/package mappings, exact source-revision checks, pinned offline advisory snapshots, plugin-binary pins, and evidence expiry. Their documented coverage is narrower than each upstream tool's full feature set.
+
 The built-in Sigstore driver invokes an operator-installed, SHA-256-pinned Cosign executable. It supports keyless **blob signatures in Sigstore v0.3 bundles**, with an exact certificate identity and OIDC issuer, a pinned local trust root, and a required transparency inclusion proof. Cosign performs the cryptographic verification. Qualification currently covers Cosign 3.1.4; other versions require validation.
 
 The driver constructs arguments itself and accepts no extra arguments or environment variables. It never enables insecure verification flags. A successful result records the artifact, bundle, executable, trust-root, and evidence-bundle digests plus the signer policy. Missing/unsupported bundles, wrong subjects, and unsuccessful verification remain inconclusive. Process failures and pin mismatches become errors in worker evidence. Required checks cannot approve either outcome.
@@ -61,7 +63,7 @@ path = "/etc/packweir/hipcheck/custom-plugin.manifest"
 sha256 = "<lowercase-sha256-of-manifest>"
 ```
 
-This illustrates the implemented resource contract; a Hipcheck wrapper is not bundled. Its executable, plugins, auxiliary configuration, and external tools still need controlled deployment. The adapter must use a resolved source revision, preserve individual plugin findings and investigation requests, and bind plugin versions/manifests/configuration to its evidence. Hipcheck supports custom plugins and policy expressions; Packweir should expose those without flattening their results into a universal security score. See [Hipcheck policy files](https://hipcheck.mitre.org/docs/guide/config/policy-file/) and [creating plugins](https://hipcheck.mitre.org/docs/guide/making-plugins/creating-a-plugin/).
+This example configures an optional operator-owned protocol wrapper. A [built-in Hipcheck driver](native-drivers.md#hipcheck-policies-and-custom-plugins) is also available with pinned policy/manifest resources, plugin-binary pins, explicit source revisions, required analysis IDs, and preserved investigation/error results. Executables, plugins, auxiliary configuration, and external tools still need controlled deployment. See [Hipcheck policy files](https://hipcheck.mitre.org/docs/guide/config/policy-file/) and [creating plugins](https://hipcheck.mitre.org/docs/guide/making-plugins/creating-a-plugin/).
 
 ## Microsoft OSSGadget coverage
 
@@ -80,18 +82,18 @@ OSSGadget's upstream README labels the project public preview and warns of backd
 
 ## Google and related ecosystem tooling
 
-These integrations are planned; no external service is contacted automatically by the current implementation.
+OSV-Scanner and SLSA Verifier have built-in drivers; the other integrations below remain planned. Explicitly configured SLSA/Hipcheck processes may contact public trust/source services. The native OSV driver uses pinned offline snapshots.
 
 | Tool or service | Planned integration and boundaries |
 |---|---|
-| [OSV-Scanner](https://github.com/google/osv-scanner) | Vulnerability findings from supported artifacts, SBOMs, and resolved manifests/lockfiles. Preserve advisory/database revision, coordinates, coverage, and finding status. Normalize finding-related exits separately from execution errors. |
+| [OSV-Scanner](https://github.com/google/osv-scanner) | Implemented: offline advisory checks of explicitly mapped package versions across all five initial ecosystems, with database pins/expiry and normalized finding/error exits. Broader artifact/lockfile/application-graph coverage remains future work. |
 | [OSV-SCALIBR](https://github.com/google/osv-scalibr) | A Go library for composition analysis, requiring a separately built helper. Preserve extractor/detector versions, discovered files/components, and unsupported coverage. It is not a drop-in executable protocol adapter. |
 | [deps.dev / Open Source Insights](https://docs.deps.dev/) | Enrich package/dependency/source metadata through an explicit service adapter. Record query, retrieval time, service response provenance, and ecosystem coverage. Hosted lookups need configured egress and disclosure policy for package coordinates. |
-| [SLSA Verifier](https://github.com/slsa-framework/slsa-verifier) | Verify supported builders' provenance using expected source/build parameters. Bind artifact subjects and policy expectations; unsupported builders remain unsupported. Preserve verification material independently of the blob-signature result. |
+| [SLSA Verifier](https://github.com/slsa-framework/slsa-verifier) | Implemented: selected GitHub artifact-provenance verification with exact builder, expected source and complete commit checks for every artifact alias. Registry discovery, additional builder/statement shapes, and native npm verification remain future work. |
 | [OpenSSF Package Analysis](https://github.com/ossf/package-analysis) | Behavioral investigation in an isolated execution environment, with install/runtime traces and bounded network/resource policy. |
 | [GUAC](https://github.com/guacsec/guac) | Optional graph exchange for artifact, dependency, vulnerability, and attestation relationships. Retain statement origin and verification status; imported relationships do not confer trust. PostgreSQL remains Packweir's decision/job store. |
 
-The next adapters should prioritize source-bound provenance verification, OSV coverage, Hipcheck with custom plugins, individual OSSGadget checks, and license evidence. Assemblyline, binary helpers, and agent escalation can then consume the same attributable evidence. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
+Next work should broaden automatic identity/provenance discovery, add individual OSSGadget checks and license evidence, and integrate Assemblyline, binary helpers, and agent escalation with the same attributable evidence. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
 
 ## Validation
 

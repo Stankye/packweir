@@ -492,7 +492,8 @@ async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
         "status":"experimental", "hosted_publishing":false,"oci_serving":false,
-        "checks":{"inventory":"builtin","provenance":"operator_adapter_required","agent":"operator_adapter_required",
+        "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
+        "vulnerabilities":"osv_driver_requires_package_mappings_and_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
         "sigstore_blob_signature":"cosign_driver_requires_pinned_executable_and_trust_root"},
         "sbom":{"formats":["SPDX-2.3","CycloneDX-1.6"],"validation":"envelope_only"}}),
     )
@@ -502,7 +503,7 @@ async fn inspect(State(state): State<AppState>, Path(digest): Path<String>) -> R
         let config=state.config.fingerprint();
         let evidence=state.store.evidence(&digest,&config).await?;
         let decision=state.config.policy.evaluate(&digest,&config,&evidence,Utc::now());
-        Ok::<_,anyhow::Error>(Json(json!({"digest":digest,"configuration":config,"decision":decision,"evidence":evidence,"documents":state.store.documents(&digest).await?})).into_response())
+        Ok::<_,anyhow::Error>(Json(json!({"digest":digest,"configuration":config,"decision":decision,"evidence":evidence,"documents":state.store.documents(&digest).await?,"identities":state.store.identities(&digest).await?})).into_response())
     }.await;
     result.unwrap_or_else(internal)
 }

@@ -1,0 +1,8 @@
+// Invocation fixture only: the constant policy tests transport and reporting, not security posture.
+plugins {
+    plugin "mitre/identity" version="0.6.0" manifest="./resource-identity_manifest"
+}
+analyze {
+    investigate policy="(lte $ 1.0)"
+    analysis "mitre/identity" policy="(eq #t #t)"
+}

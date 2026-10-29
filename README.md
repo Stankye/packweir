@@ -20,6 +20,7 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Attributable document ingestion/export, explicit unverified status, and invalidation of evidence when external documents or artifact identities change.
 - A bounded command-adapter protocol for external scanners, provenance verifiers, and future agents.
 - A Cosign-backed Sigstore blob-signature driver with exact signer/issuer policy and pinned executable/trust root; digest-pinned resource snapshots for custom adapters.
+- Built-in SLSA Verifier, offline OSV-Scanner, and Hipcheck drivers with explicit source/package mappings, preserved findings, plugin pins, and database-bound evidence expiry.
 
 The sample configuration requires inventory and archive-safety checks only. **This is a bootstrap policy, not malware detection or a provenance guarantee.** Configure trusted adapters and add their check names to `policy.required` before depending on those capabilities. Requiring an unavailable integration keeps the artifact pending.
 
@@ -86,6 +87,8 @@ Every `/api/v1` request requires `Authorization: Bearer <admin-token>`.
 | POST | `/api/v1/prefetch` | Stage a repository-relative package path |
 
 Document ingestion accepts `{"kind":"sbom","origin":"publisher_declared","document":{...}}`. Kinds are `sbom`, `attestation`, `sigstore_bundle`, `vex`, and `lockfile`; external origins are `publisher_declared` and `client_resolved`. Ingested SBOMs receive envelope checks only, not full schema or semantic validation. Ingesting a signature or provenance statement does not verify it or approve an artifact. See [tool integrations](docs/integrations.md) to configure and require Sigstore verification.
+
+The inspection response includes artifact `identities` for configuring exact mappings. See [native drivers](docs/native-drivers.md) for source-bound SLSA verification (including original-byte attestation ingestion), offline mapped-package vulnerability checks, and Hipcheck/custom-plugin policies.
 
 ## Verification and remaining work
 

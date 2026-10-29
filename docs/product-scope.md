@@ -60,7 +60,7 @@ Packweir currently has no complete license scanning, SPDX-expression evaluation,
 
 MITRE Hipcheck, OpenSSF tools, Microsoft OSSGadget, custom checks, and vulnerability/license scanners provide different observations. Each adapter needs a coverage contract, normalized outcomes, pinned configuration, and qualification fixtures. Tools must not silently substitute for each other.
 
-The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck custom plugins, the OSSGadget suite, OSV-Scanner/OSV-SCALIBR, deps.dev, SLSA Verifier, and graph exchange. The Cosign blob-signature driver and pinned adapter resources are implemented foundations; source/build provenance evaluation and the other tool-specific wrappers remain planned work.
+The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck custom plugins, the OSSGadget suite, OSV-Scanner/OSV-SCALIBR, deps.dev, SLSA Verifier, and graph exchange. Implemented foundations include Cosign blob signatures, source-bound SLSA verification for supported inputs, offline OSV mapped-package checks, Hipcheck policies with plugin pins, and pinned adapter resources. Automated mapping/discovery and the remaining tool-specific integrations are future work; see the [native driver limits](native-drivers.md).
 
 Assemblyline v4 (ASv4) is a planned external analysis integration. Its selected services should produce attributable findings and extracted-file relationships, not one universal approval score. Ghidra and deobfuscation may run through dedicated helpers or services where available. Preserve transformation chains; sandbox any execution. THOR and DRAKVUF-class execution remain specialized stretch integrations. See the [scanner protocol and Assemblyline design](scanners.md).
 

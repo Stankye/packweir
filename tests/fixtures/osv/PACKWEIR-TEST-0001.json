@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.6.0",
+  "id": "PACKWEIR-TEST-0001",
+  "published": "2026-01-01T00:00:00Z",
+  "modified": "2026-01-01T00:00:00Z",
+  "summary": "Synthetic fixture; this is not a real vulnerability advisory",
+  "affected": [{
+    "package": {"ecosystem": "npm", "name": "packweir-fixture"},
+    "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "2.0.0"}]}]
+  }]
+}
