@@ -34,6 +34,540 @@ fn config(root: &std::path::Path, origin: &str) -> Config {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn delivery_scopes_isolate_aliases_and_explain_policy_while_sharing_bytes(
+    pool: sqlx::PgPool,
+) {
+    use packweir::{
+        config::{CommandScanner, PinnedResource, ScannerDriver},
+        model::sha256,
+        policy::{PolicyRequirements, PolicyScope},
+    };
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    let temp = tempfile::tempdir().unwrap();
+    let payload = b"same harmless package bytes";
+    let digest = sha256(payload);
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/", upstream_listener.local_addr().unwrap());
+    let other_manifest = json!({"name":"@other/pkg","versions":{"1.0":{"name":"@other/pkg","version":"1.0","dist":{"tarball":format!("{origin}@other/pkg/-/pkg-1.0.tgz")}}}});
+    let acme_manifest = json!({"name":"@acme/pkg","versions":{"1.0":{"name":"@acme/pkg","version":"1.0","dist":{"tarball":format!("{origin}@acme/pkg/-/pkg-1.0.tgz")}}}});
+    let upstream = tokio::spawn(async move {
+        axum::serve(
+            upstream_listener,
+            Router::new()
+                .route(
+                    "/@other/pkg",
+                    get(move || {
+                        let value = other_manifest.clone();
+                        async move { axum::Json(value) }
+                    }),
+                )
+                .route(
+                    "/@acme/pkg",
+                    get(move || {
+                        let value = acme_manifest.clone();
+                        async move { axum::Json(value) }
+                    }),
+                )
+                .fallback(get(|| async { "same harmless package bytes" })),
+        )
+        .await
+        .unwrap()
+    });
+    let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut settings = config(temp.path(), &origin);
+    settings.public_url = format!("http://{}/", gateway_listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    let additions = PolicyRequirements {
+        revision: "review-v1".into(),
+        required: vec!["review".into()],
+        deny_on_failure: vec![],
+    };
+    let mut strict = settings.repositories["npm"].clone();
+    strict.policy = Some(additions.clone());
+    settings.repositories.insert("npm-strict".into(), strict);
+    settings.policy_scopes.push(PolicyScope {
+        name: "acme".into(),
+        repository: "npm".into(),
+        namespace: Some("@acme".into()),
+        package: None,
+        policy: additions,
+    });
+    let report =
+        serde_json::to_vec(&json!({"outcome":"fail","details":{"reason":"test review failure"}}))
+            .unwrap();
+    let report_path = temp.path().join("report.json");
+    std::fs::write(&report_path, &report).unwrap();
+    let program = support::fixture_program();
+    settings.scanners.insert(
+        "review".into(),
+        CommandScanner {
+            program: program.to_string_lossy().into(),
+            args: vec!["scope-report".into()],
+            version: "fixture-v1".into(),
+            timeout_seconds: 5,
+            environment: BTreeMap::new(),
+            program_sha256: Some(sha256(&std::fs::read(program).unwrap())),
+            resources: BTreeMap::from([(
+                "report".into(),
+                PinnedResource {
+                    path: report_path.to_string_lossy().into(),
+                    sha256: sha256(&report),
+                },
+            )]),
+            driver: ScannerDriver::Command,
+        },
+    );
+    settings.validate().unwrap();
+    let settings = Arc::new(settings);
+    let store = Store { pool };
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let app = gateway::router(AppState::new(
+        settings.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let server_app = app.clone();
+    let gateway_server =
+        tokio::spawn(async move { axum::serve(gateway_listener, server_app).await.unwrap() });
+    let request = |path: &str| {
+        Request::builder()
+            .uri(path)
+            .header("authorization", format!("Bearer {}", "r".repeat(32)))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let open = "/r/npm/@other/pkg/-/pkg-1.0.tgz";
+    let protected = "/r/npm/@acme/pkg/-/pkg-1.0.tgz";
+    let repository_protected = "/r/npm-strict/@other/pkg/-/pkg-1.0.tgz";
+    for metadata in [
+        "/r/npm/@other/pkg",
+        "/r/npm/@acme/pkg",
+        "/r/npm-strict/@other/pkg",
+    ] {
+        assert_eq!(
+            app.clone()
+                .oneshot(request(metadata))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        app.clone().oneshot(request(open)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request(open)).await.unwrap().status(),
+        StatusCode::OK
+    );
+    for route in [protected, repository_protected] {
+        assert_eq!(
+            app.clone().oneshot(request(route)).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Registering an alias must not revoke or lend the unrelated delivery's approval.
+        assert_eq!(
+            app.clone().oneshot(request(open)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request(route)).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let unknown = "/r/npm/opaque.tgz";
+    assert_eq!(
+        app.clone()
+            .oneshot(request(unknown))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(request(unknown))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/artifacts/{digest}"))
+                .header("authorization", format!("Bearer {}", "a".repeat(32)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(report["decision"]["state"], "denied");
+    let scopes = report["scopes"].as_array().unwrap();
+    assert_eq!(scopes.len(), 4);
+    let configurations: std::collections::BTreeSet<_> = scopes
+        .iter()
+        .map(|s| s["configuration"].as_str().unwrap())
+        .collect();
+    assert_eq!(configurations.len(), 4);
+    let opaque = scopes
+        .iter()
+        .find(|s| s["scope"]["package"].is_null())
+        .unwrap();
+    assert_eq!(opaque["decision"]["state"], "pending");
+    assert!(
+        opaque["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["check"] == "package_identity" && c["status"] == "inconclusive")
+    );
+    let blob_count: i64 = sqlx::query_scalar("SELECT count(DISTINCT digest) FROM artifacts")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(blob_count, 1);
+    let configuration_path = temp.path().join("cli.toml");
+    std::fs::write(&configuration_path, toml::to_string(&*settings).unwrap()).unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_packweir"))
+        .args([
+            "--config",
+            configuration_path.to_str().unwrap(),
+            "explain",
+            &digest,
+            "--repository",
+            "npm-strict",
+        ])
+        .env("PACKWEIR_ADMIN_TOKEN", "a".repeat(32))
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let explanation = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        explanation.contains("review: fail (required)")
+            && explanation.contains("repository:npm-strict:review-v1")
+    );
+    assert!(!explanation.contains("Repository: npm\n"));
+    let open_origin = format!("{origin}@other/pkg/-/pkg-1.0.tgz");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_packweir"))
+        .args([
+            "--config",
+            configuration_path.to_str().unwrap(),
+            "explain",
+            &digest,
+            "--repository",
+            "npm",
+            "--origin",
+            &open_origin,
+            "--json",
+        ])
+        .env("PACKWEIR_ADMIN_TOKEN", "a".repeat(32))
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let filtered: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(filtered["decision"]["state"], "approved");
+    assert_eq!(filtered["scopes"].as_array().unwrap().len(), 1);
+    let selected = &filtered["scopes"][0];
+    assert_eq!(selected["scope"]["origin"], open_origin);
+    let stored:serde_json::Value=sqlx::query_scalar("SELECT document FROM decisions WHERE repository='npm' AND document->>'state'='approved' ORDER BY id DESC LIMIT 1")
+        .fetch_one(&store.pool).await.unwrap();
+    assert_eq!(stored["scope"]["origin"], open_origin);
+    assert!(stored["policy"]["layers"].is_array());
+    let rescan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/artifacts/{digest}/rescan"))
+                .header("authorization", format!("Bearer {}", "a".repeat(32)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rescan.status(), StatusCode::ACCEPTED);
+    let queued: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM jobs WHERE subject=$1 AND state='queued'")
+            .bind(&digest)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(queued, 4);
+    assert_eq!(
+        app.clone().oneshot(request(open)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for _ in 0..4 {
+        scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        app.clone().oneshot(request(open)).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request(protected))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(blobs.read(&digest).await.unwrap(), payload);
+    gateway_server.abort();
+    upstream.abort();
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_preserves_legacy_blobs_but_requires_new_delivery_approval(pool: sqlx::PgPool) {
+    use packweir::model::sha256;
+    let temp = tempfile::tempdir().unwrap();
+    let migration_directory = temp.path().join("old-migrations");
+    std::fs::create_dir(&migration_directory).unwrap();
+    std::fs::write(
+        migration_directory.join("0001_initial.sql"),
+        include_str!("../migrations/0001_initial.sql"),
+    )
+    .unwrap();
+    sqlx::migrate::Migrator::new(migration_directory.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let settings = Arc::new(config(temp.path(), "http://127.0.0.1:1/"));
+    let store = Store { pool };
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let bytes = b"retained legacy bytes";
+    let digest = blobs.put(bytes.to_vec()).await.unwrap();
+    let origin = "http://127.0.0.1:1/pkg/-/pkg-1.0.tgz";
+    sqlx::query("INSERT INTO artifacts(repository,origin,digest,size,filename,content_type) VALUES('npm',$1,$2,$3,'pkg-1.0.tgz','application/octet-stream')")
+        .bind(origin).bind(&digest).bind(bytes.len() as i64).execute(&store.pool).await.unwrap();
+    store
+        .enqueue(&digest, "legacy-deployment", "pkg-1.0.tgz")
+        .await
+        .unwrap();
+    sqlx::migrate!().run(&store.pool).await.unwrap();
+    assert!(
+        store
+            .artifact("npm", origin)
+            .await
+            .unwrap()
+            .unwrap()
+            .package
+            .is_none()
+    );
+    assert_eq!(blobs.read(&digest).await.unwrap(), bytes);
+    let app = gateway::router(AppState::new(
+        settings.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let request = || {
+        Request::builder()
+            .uri("/r/npm/pkg/-/pkg-1.0.tgz")
+            .header("authorization", format!("Bearer {}", "r".repeat(32)))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        app.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        store
+            .artifact("npm", origin)
+            .await
+            .unwrap()
+            .unwrap()
+            .package
+            .unwrap()
+            .purl,
+        "pkg:npm/pkg@1.0"
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.oneshot(request()).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(sha256(&blobs.read(&digest).await.unwrap()), digest);
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM jobs WHERE configuration='legacy-deployment'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "queued");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn misleading_tarball_paths_and_conflicting_discovery_claims_cannot_skip_namespace_policy(
+    pool: sqlx::PgPool,
+) {
+    use packweir::policy::{PolicyRequirements, PolicyScope};
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}/", listener.local_addr().unwrap());
+    let tarball = format!("{origin}@other/widget/-/widget-1.0.tgz");
+    let strict = json!({"name":"@acme/widget","versions":{"1.0":{"name":"@acme/widget","version":"1.0","dist":{"tarball":tarball}}}});
+    let other = json!({"name":"@other/widget","versions":{"1.0":{"name":"@other/widget","version":"1.0","dist":{"tarball":tarball}}}});
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route(
+                    "/@acme/widget",
+                    get(move || {
+                        let value = strict.clone();
+                        async move { axum::Json(value) }
+                    }),
+                )
+                .route(
+                    "/@other/widget",
+                    get(move || {
+                        let value = other.clone();
+                        async move { axum::Json(value) }
+                    }),
+                )
+                .route(
+                    "/@other/widget/-/widget-1.0.tgz",
+                    get(|| async { "fixture" }),
+                ),
+        )
+        .await
+        .unwrap()
+    });
+    let mut settings = config(temp.path(), &origin);
+    settings.policy_scopes.push(PolicyScope {
+        name: "acme".into(),
+        repository: "npm".into(),
+        namespace: Some("@acme".into()),
+        package: None,
+        policy: PolicyRequirements {
+            revision: "strict-v1".into(),
+            required: vec!["publisher_signature".into()],
+            deny_on_failure: vec![],
+        },
+    });
+    let settings = Arc::new(settings);
+    let store = Store { pool };
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let app = gateway::router(AppState::new(
+        settings.clone(),
+        store.clone(),
+        blobs.clone(),
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let request = |path: &str| {
+        Request::builder()
+            .uri(path)
+            .header("authorization", format!("Bearer {}", "r".repeat(32)))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let route = "/r/npm/@other/widget/-/widget-1.0.tgz";
+    assert_eq!(
+        app.clone().oneshot(request(route)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request(route)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request("/r/npm/@acme/widget"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.clone().oneshot(request(route)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    for _ in 0..4 {
+        scanner::worker(settings.clone(), store.clone(), blobs.clone(), true)
+            .await
+            .unwrap();
+    }
+    let artifact = store.artifact("npm", &tarball).await.unwrap().unwrap();
+    assert_eq!(artifact.package.as_ref().unwrap().name, "@acme/widget");
+    assert!(
+        settings
+            .effective_policy(&artifact.scope())
+            .unwrap()
+            .policy
+            .required
+            .contains(&"publisher_signature".into())
+    );
+    assert_eq!(
+        app.clone().oneshot(request(route)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(request("/r/npm/@other/widget"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert!(
+        store
+            .artifact("npm", &tarball)
+            .await
+            .unwrap()
+            .unwrap()
+            .package
+            .is_none()
+    );
+    assert_eq!(
+        app.oneshot(request(route)).await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    server.abort();
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn readiness_checks_dependencies_while_liveness_remains_available(pool: sqlx::PgPool) {
     let temp = tempfile::tempdir().unwrap();
     let settings = Arc::new(config(temp.path(), "http://127.0.0.1:1/"));
@@ -406,9 +940,11 @@ async fn real_cosign_bundle_ingestion_gates_delivery_and_changed_trust(pool: sql
         .header("authorization", format!("Bearer {}", "a".repeat(32))).header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&json!({"kind":"sigstore_bundle", "origin":"publisher_declared", "document":signature})).unwrap())).unwrap()).await.unwrap();
     assert_eq!(ingested.status(), StatusCode::CREATED);
+    let artifact = store.artifacts(&digest).await.unwrap().remove(0);
+    let delivery_configuration = settings.delivery_fingerprint(&artifact.scope()).unwrap();
     assert!(
         store
-            .evidence(&digest, &settings.fingerprint())
+            .evidence(&digest, &delivery_configuration)
             .await
             .unwrap()
             .is_empty()
@@ -606,8 +1142,16 @@ async fn native_driver_evidence_gates_delivery_and_expires_with_its_database(poo
         app.clone().oneshot(request()).await.unwrap().status(),
         StatusCode::OK
     );
+    let artifact = store
+        .artifact(&binding.repository, &binding.origin)
+        .await
+        .unwrap()
+        .unwrap();
     let evidence = store
-        .evidence(&digest, &settings.fingerprint())
+        .evidence(
+            &digest,
+            &settings.delivery_fingerprint(&artifact.scope()).unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(

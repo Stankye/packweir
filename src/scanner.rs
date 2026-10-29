@@ -163,6 +163,26 @@ fn evidence(
 }
 
 pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Job) -> Result<()> {
+    let scope = store.job_scope(job.id).await?;
+    if let Some(scope) = &scope {
+        ensure!(
+            config.delivery_fingerprint(scope)? == job.configuration,
+            "job delivery configuration changed"
+        );
+        let artifact = store
+            .artifact(&scope.repository, &scope.origin)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("artifact identity no longer registered"))?;
+        ensure!(
+            artifact.digest == job.subject && artifact.scope() == *scope,
+            "job artifact identity changed"
+        );
+    } else {
+        ensure!(
+            job.configuration == config.fingerprint(),
+            "legacy job configuration changed"
+        );
+    }
     let bytes = blobs.read(&job.subject).await?;
     let name = job.filename.clone();
     let inspected = tokio::task::spawn_blocking(move || {
@@ -170,6 +190,20 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
     })
     .await?;
     let mut findings = vec![];
+    if let Some(scope) = &scope {
+        findings.push(evidence(
+            config,
+            job,
+            "package_identity",
+            env!("CARGO_PKG_VERSION"),
+            if config.identity_sufficient(scope)? {
+                Outcome::Pass
+            } else {
+                Outcome::Inconclusive
+            },
+            serde_json::json!({"package":scope.package,"trusted_source_established":false}),
+        ));
+    }
     match inspected {
         Ok(inventory) => {
             for (kind, document) in [
@@ -230,7 +264,12 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
             document["document"] = content;
             documents.push(document);
         }
-        let bundle = serde_json::json!({"identities":store.identities(&job.subject).await?,"documents":documents});
+        let identities = if let Some(scope) = &scope {
+            vec![serde_json::to_value(scope)?]
+        } else {
+            store.identities(&job.subject).await?
+        };
+        let bundle = serde_json::json!({"identities":identities,"documents":documents});
         for (name, scanner) in &config.scanners {
             let mut e = match run(scanner, job, &bytes, &bundle).await {
                 Ok(output) => {

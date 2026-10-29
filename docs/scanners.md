@@ -17,7 +17,7 @@ An adapter receives one JSON request on stdin:
 }
 ```
 
-The evidence bundle contains observed file inventory/SBOM documents, externally supplied documents, and all registered upstream identities for these bytes. An adapter must distinguish publisher claims, observed content, and client dependency graphs. Artifacts sharing bytes can have different source/identity expectations; provenance adapters must evaluate all supplied identities rather than approve only one alias.
+The evidence bundle contains observed file inventory/SBOM documents, externally supplied documents, and the current delivery's upstream identity (including observed package coordinates where recognized). An adapter must distinguish publisher claims, observed content, and client dependency graphs. Packweir 0.2.0 binds jobs and approvals to individual delivery scopes over shared blobs. Direct protocol callers supplying multiple identities must evaluate their entire supplied bundle. See [package identities and policy scopes](policies.md).
 
 Adapters with configured pinned resources receive an additional `resources` field, mapping names to read-only snapshot paths and SHA-256 digests. The field is omitted when no resources are configured. Adapters opting into this extension must use the supplied snapshots; see [resource configuration](integrations.md#custom-adapters-and-pinned-resources).
 

@@ -19,6 +19,8 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub policy: Policy,
+    #[serde(default)]
+    pub policy_scopes: Vec<crate::policy::PolicyScope>,
     pub repositories: BTreeMap<String, Repository>,
     #[serde(default)]
     pub scanners: BTreeMap<String, CommandScanner>,
@@ -63,6 +65,7 @@ pub struct Repository {
     pub retain: bool,
     pub token_env: Option<String>,
     pub cargo_download_template: Option<String>,
+    pub policy: Option<crate::policy::PolicyRequirements>,
 }
 fn yes() -> bool {
     true
@@ -430,12 +433,156 @@ fn scanner_timeout() -> u64 {
 }
 
 impl Config {
+    pub fn effective_policy(
+        &self,
+        scope: &crate::identity::DeliveryScope,
+    ) -> Result<crate::policy::EffectivePolicy> {
+        let repo = self
+            .repositories
+            .get(&scope.repository)
+            .ok_or_else(|| anyhow::anyhow!("unknown policy repository"))?;
+        ensure!(
+            scope
+                .package
+                .as_ref()
+                .is_none_or(|p| p.ecosystem == repo.ecosystem && p.is_canonical()),
+            "stored identity requires a fresh registry observation after an ecosystem or coordinate change"
+        );
+        let mut policy = self.policy.clone();
+        let mut layers = vec![format!("global:{}", policy.revision)];
+        if let Some(additions) = &repo.policy {
+            policy.extend(additions);
+            layers.push(format!(
+                "repository:{}:{}",
+                scope.repository, additions.revision
+            ));
+        }
+        let mut identity_required = false;
+        for rule in self
+            .policy_scopes
+            .iter()
+            .filter(|r| r.repository == scope.repository)
+        {
+            identity_required = true;
+            if scope.package.as_ref().is_some_and(|p| rule.matches(p)) {
+                policy.extend(&rule.policy);
+                layers.push(format!("scope:{}:{}", rule.name, rule.policy.revision));
+            }
+        }
+        if identity_required {
+            policy.required.push("package_identity".into());
+            policy.required.sort();
+            policy.required.dedup();
+        }
+        Ok(crate::policy::EffectivePolicy {
+            policy,
+            layers,
+            identity_required,
+        })
+    }
+    pub fn delivery_fingerprint(&self, scope: &crate::identity::DeliveryScope) -> Result<String> {
+        Ok(sha256(&serde_json::to_vec(
+            &serde_json::json!({"engine":self.fingerprint(),"scope":scope,"effective":self.effective_policy(scope)?}),
+        )?))
+    }
+    pub fn identity_sufficient(&self, scope: &crate::identity::DeliveryScope) -> Result<bool> {
+        let effective = self.effective_policy(scope)?;
+        Ok(scope.package.as_ref().is_some_and(|p| {
+            !effective.identity_required
+                || !matches!(p.ecosystem, Ecosystem::Npm | Ecosystem::Pypi)
+                || p.basis == "registry_metadata_observed"
+        }))
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let config: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
         config.validate()?;
         Ok(config)
     }
     pub fn validate(&self) -> Result<()> {
+        fn checks(revision: &str, required: &[String], denied: &[String]) -> Result<()> {
+            ensure!(
+                !revision.is_empty() && revision.len() <= 256,
+                "policy revision required (at most 256 characters)"
+            );
+            ensure!(
+                required.len() <= 64 && denied.len() <= 64,
+                "at most 64 checks per policy list"
+            );
+            ensure!(
+                required.iter().chain(denied).all(|c| !c.is_empty()
+                    && c.len() <= 128
+                    && c.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))),
+                "invalid policy check name"
+            );
+            Ok(())
+        }
+        checks(
+            &self.policy.revision,
+            &self.policy.required,
+            &self.policy.deny_on_failure,
+        )?;
+        ensure!(self.policy_scopes.len() <= 256, "at most 256 policy scopes");
+        let mut scope_names = BTreeSet::new();
+        for scope in &self.policy_scopes {
+            ensure!(
+                !scope.name.is_empty()
+                    && scope.name.len() <= 128
+                    && scope
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                    && scope_names.insert(&scope.name),
+                "policy scope names must be unique and nonempty"
+            );
+            let repo = self
+                .repositories
+                .get(&scope.repository)
+                .ok_or_else(|| anyhow::anyhow!("unknown policy scope repository"))?;
+            ensure!(
+                scope.namespace.is_some() != scope.package.is_some(),
+                "a policy scope must select exactly one namespace or package"
+            );
+            if let Some(name) = &scope.package {
+                ensure!(
+                    crate::identity::canonical_name(repo.ecosystem, name).as_ref() == Some(name),
+                    "policy package selector must be canonical"
+                );
+            }
+            if let Some(namespace) = &scope.namespace {
+                let valid = match repo.ecosystem {
+                    Ecosystem::Npm => {
+                        namespace.starts_with('@')
+                            && !namespace.contains('/')
+                            && crate::identity::canonical_name(
+                                Ecosystem::Npm,
+                                &format!("{namespace}/placeholder"),
+                            )
+                            .as_ref()
+                                == Some(&format!("{namespace}/placeholder"))
+                    }
+                    Ecosystem::Maven => crate::identity::canonical_name(
+                        Ecosystem::Maven,
+                        &format!("{namespace}:placeholder"),
+                    )
+                    .is_some(),
+                    _ => false,
+                };
+                ensure!(
+                    valid,
+                    "namespaces support npm scopes and Maven group prefixes; use package selectors for other ecosystems"
+                );
+            }
+            checks(
+                &scope.policy.revision,
+                &scope.policy.required,
+                &scope.policy.deny_on_failure,
+            )?;
+            ensure!(
+                !scope.policy.required.iter().any(|c| c == "agent") || self.policy.trust_agent,
+                "scoped agent requirements need global trust_agent=true"
+            );
+        }
         ensure!(
             matches!(self.public_url.scheme(), "http" | "https")
                 && self.public_url.host_str().is_some(),
@@ -458,6 +605,13 @@ impl Config {
             "at least one repository required"
         );
         for (name, repo) in &self.repositories {
+            if let Some(policy) = &repo.policy {
+                checks(&policy.revision, &policy.required, &policy.deny_on_failure)?;
+                ensure!(
+                    !policy.required.iter().any(|c| c == "agent") || self.policy.trust_agent,
+                    "repository agent requirements need global trust_agent=true"
+                );
+            }
             ensure!(
                 !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
                 "invalid repository name"
@@ -494,7 +648,13 @@ impl Config {
         for (name, scanner) in &self.scanners {
             scanner.validate()?;
             ensure!(
-                !["inventory", "archive_safety", "integrity"].contains(&name.as_str()),
+                ![
+                    "inventory",
+                    "archive_safety",
+                    "integrity",
+                    "package_identity"
+                ]
+                .contains(&name.as_str()),
                 "reserved scanner name"
             );
             ensure!(

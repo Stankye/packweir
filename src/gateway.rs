@@ -1,7 +1,7 @@
 pub use crate::bounds::parse_range;
 use crate::{
     config::{Config, Repository},
-    inventory,
+    explain, identity, inventory,
     model::{Artifact, Decision, Ecosystem, sha256},
     network, registry,
     storage::BlobStore,
@@ -11,7 +11,7 @@ use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, OriginalUri, Path, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -296,11 +296,21 @@ async fn proxy_inner(
     let metadata = !path.starts_with("_cargo/") && registry::is_metadata(repo.ecosystem, &url);
     if !metadata
         && repo.retain
-        && let Some(artifact) = state.store.artifact(name, url.as_str()).await?
+        && let Some(mut artifact) = state.store.artifact(name, url.as_str()).await?
         && let Ok(bytes) = state.blobs.read(&artifact.digest).await
     {
         // The URL fragment is part of the origin mapping and is verified on each delivery.
         network::verify_fragment(&url, &bytes)?;
+        let (claimed, package) = state.store.claimed_identity(name, url.as_str()).await?;
+        let package = if claimed {
+            package
+        } else {
+            identity::observe(repo, &url, path)
+        };
+        if artifact.package != package {
+            artifact.package = package;
+            artifact = state.store.register(&artifact).await?;
+        }
         return gate(state, repo, artifact, bytes, headers).await;
     }
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
@@ -331,7 +341,8 @@ async fn proxy_inner(
             &url,
             &download.content_type,
             &download.bytes,
-        )?;
+        )
+        .await?;
         return response(bytes, &download.content_type, None, headers);
     }
     if network::verify_fragment(&url, &download.bytes).is_err() {
@@ -363,12 +374,13 @@ async fn proxy_inner(
         size: bytes.len() as i64,
         filename,
         content_type: download.content_type,
+        package: identity::observe(repo, &url, path),
     };
-    state.store.register(&artifact).await?;
+    let artifact = state.store.register(&artifact).await?;
     gate(state, repo, artifact, bytes, headers).await
 }
 
-fn rewrite_metadata(
+async fn rewrite_metadata(
     state: &AppState,
     repo: &Repository,
     name: &str,
@@ -377,14 +389,17 @@ fn rewrite_metadata(
     bytes: &[u8],
 ) -> Result<Vec<u8>> {
     if repo.ecosystem == Ecosystem::Pypi && !content_type.contains("json") {
-        return Ok(registry::rewrite_html(
+        let rewritten = registry::rewrite_html(
             std::str::from_utf8(bytes)?,
             url,
             repo,
             name,
             &state.config.public_url,
-        )?
-        .into_bytes());
+        )?;
+        for claim in identity::html_claims(repo, url, std::str::from_utf8(bytes)?)? {
+            state.store.observe_claim(name, &claim).await?;
+        }
+        return Ok(rewritten.into_bytes());
     }
     if matches!(
         repo.ecosystem,
@@ -392,6 +407,9 @@ fn rewrite_metadata(
     ) {
         let mut value: Value = serde_json::from_slice(bytes)?;
         registry::rewrite_json(&mut value, repo, name, &state.config.public_url)?;
+        for claim in identity::json_claims(repo, url, &value)? {
+            state.store.observe_claim(name, &claim).await?;
+        }
         return Ok(serde_json::to_vec(&value)?);
     }
     if repo.ecosystem == Ecosystem::Cargo {
@@ -409,15 +427,16 @@ async fn gate(
     bytes: Vec<u8>,
     headers: &HeaderMap,
 ) -> Result<Response> {
-    let config = state.config.fingerprint();
+    let scope = artifact.scope();
+    let config = state.config.delivery_fingerprint(&scope)?;
+    let effective = state.config.effective_policy(&scope)?;
     let evidence = state.store.evidence(&artifact.digest, &config).await?;
-    let decision = state
-        .config
+    let decision = effective
         .policy
         .evaluate(&artifact.digest, &config, &evidence, Utc::now());
     state
         .store
-        .decision(&artifact.repository, &artifact.digest, &config, &decision)
+        .delivery_decision(&artifact, &config, &effective, &decision)
         .await?;
     match &decision {
         Decision::Approved => {
@@ -446,17 +465,17 @@ async fn gate(
         }
         Decision::Denied(_) => Ok((
             StatusCode::FORBIDDEN,
-            Json(json!({"digest":artifact.digest,"decision":decision})),
+            Json(json!({"digest":artifact.digest,"configuration":config,"scope":scope,"decision":decision})),
         )
             .into_response()),
         Decision::Pending(_) => {
             state
                 .store
-                .enqueue(&artifact.digest, &config, &artifact.filename)
+                .enqueue_delivery(&artifact, &config, &state.config.fingerprint())
                 .await?;
             let mut response = (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"digest":artifact.digest,"decision":decision})),
+                Json(json!({"digest":artifact.digest,"configuration":config,"scope":scope,"decision":decision})),
             )
                 .into_response();
             response
@@ -503,20 +522,114 @@ async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
         "status":"experimental", "hosted_publishing":false,"oci_serving":false,
+        "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "vulnerabilities":"osv_driver_requires_package_mappings_and_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
         "sigstore_blob_signature":"cosign_driver_requires_pinned_executable_and_trust_root"},
         "sbom":{"formats":["SPDX-2.3","CycloneDX-1.6"],"validation":"envelope_only"}}),
     )
 }
-async fn inspect(State(state): State<AppState>, Path(digest): Path<String>) -> Response {
-    let result = async {
-        let config=state.config.fingerprint();
-        let evidence=state.store.evidence(&digest,&config).await?;
-        let decision=state.config.policy.evaluate(&digest,&config,&evidence,Utc::now());
-        Ok::<_,anyhow::Error>(Json(json!({"digest":digest,"configuration":config,"decision":decision,"evidence":evidence,"documents":state.store.documents(&digest).await?,"identities":state.store.identities(&digest).await?})).into_response())
-    }.await;
-    result.unwrap_or_else(internal)
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectionFilter {
+    repository: Option<String>,
+    origin: Option<String>,
+}
+
+async fn inspect(
+    State(state): State<AppState>,
+    Path(digest): Path<String>,
+    Query(filter): Query<InspectionFilter>,
+) -> Response {
+    inspection(&state, &digest, &filter)
+        .await
+        .unwrap_or_else(internal)
+}
+
+async fn inspection(state: &AppState, digest: &str, filter: &InspectionFilter) -> Result<Response> {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Ok(failure(StatusCode::BAD_REQUEST, "invalid_digest"));
+    }
+    if filter.origin.is_some() && filter.repository.is_none() {
+        return Ok(failure(
+            StatusCode::BAD_REQUEST,
+            "origin_requires_repository",
+        ));
+    }
+    let mut scopes = Vec::new();
+    let mut identities = Vec::new();
+    let mut evidence = Vec::new();
+    for artifact in state.store.artifacts(digest).await? {
+        if !state.config.repositories.contains_key(&artifact.repository)
+            || filter
+                .repository
+                .as_ref()
+                .is_some_and(|r| r != &artifact.repository)
+            || filter
+                .origin
+                .as_ref()
+                .is_some_and(|o| o != &artifact.origin)
+        {
+            continue;
+        }
+        let scope = artifact.scope();
+        let config = state.config.delivery_fingerprint(&scope)?;
+        let history = state.store.evidence_history(digest, &config).await?;
+        let job = state.store.job_status(digest, &config).await?;
+        let now = Utc::now();
+        evidence.extend(
+            history
+                .iter()
+                .filter(|e| e.created_at <= now && e.expires_at > now)
+                .cloned(),
+        );
+        identities.push(serde_json::to_value(&scope)?);
+        let policy = state.config.effective_policy(&scope)?;
+        let mut explanation = explain::scope(digest, scope, config, policy, &history, now);
+        explanation.job = job;
+        for check in &mut explanation.checks {
+            check.provider = if ["inventory", "archive_safety", "package_identity"]
+                .contains(&check.check.as_str())
+            {
+                "builtin"
+            } else if state.config.scanners.contains_key(&check.check) {
+                "configured_adapter"
+            } else {
+                "unavailable"
+            }
+            .into();
+            if check.required && check.provider == "unavailable" && check.status == "missing" {
+                check.next_action =
+                    "Configure a qualified scanner for this required check and request a rescan."
+                        .into();
+            }
+        }
+        scopes.push(explanation);
+    }
+    if scopes.is_empty() {
+        return Ok(failure(StatusCode::NOT_FOUND, "artifact_not_registered"));
+    }
+    let decision = explain::aggregate(scopes.iter().map(|s| s.decision.clone()));
+    let configuration = scopes
+        .first()
+        .filter(|_| scopes.len() == 1)
+        .map(|s| s.configuration.clone());
+    let documents = state.store.documents(digest).await?;
+    Ok(Json(json!({
+        "digest": digest,
+        "configuration": configuration,
+        "engine_configuration": state.config.fingerprint(),
+        "decision": decision,
+        "evidence": evidence,
+        "documents": documents,
+        "identities": identities,
+        "scopes": scopes
+    }))
+    .into_response())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -598,15 +711,22 @@ async fn document(
 async fn rescan(State(state): State<AppState>, Path(digest): Path<String>) -> Response {
     let result = async {
         state.blobs.read(&digest).await?;
-        let filename: Option<String> =
-            sqlx::query_scalar("SELECT filename FROM artifacts WHERE digest=$1 LIMIT 1")
-                .bind(&digest)
-                .fetch_optional(&state.store.pool)
-                .await?;
-        let filename = filename.ok_or_else(|| anyhow::anyhow!("artifact not registered"))?;
+        let artifacts = state.store.artifacts(&digest).await?;
+        ensure!(!artifacts.is_empty(), "artifact not registered");
         let config = state.config.fingerprint();
         state.store.invalidate(&digest).await?;
-        state.store.enqueue(&digest, &config, &filename).await?;
+        for artifact in artifacts {
+            if state.config.repositories.contains_key(&artifact.repository) {
+                state
+                    .store
+                    .enqueue_delivery(
+                        &artifact,
+                        &state.config.delivery_fingerprint(&artifact.scope())?,
+                        &config,
+                    )
+                    .await?;
+            }
+        }
         state
             .store
             .audit("rescan_requested", &digest, json!({"configuration":config}))

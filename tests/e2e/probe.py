@@ -55,6 +55,10 @@ def main():
         assert status == 503 and json.loads(body) == {"ready": False}, (status, body)
         assert request("/health", token=None)[0] == 200
     elif phase == "prefetch":
+        # Identity-based npm/PyPI rules require discovery binding, not filename guesses.
+        for metadata in ["/r/npm/packweir-fixture", "/r/npm/@packweir/fixture", "/r/pypi/packweir-fixture/"]:
+            status, body, _ = request(metadata)
+            assert status == 200, (metadata, status, body)
         for item in catalog:
             status, body, _ = request("/api/v1/prefetch", token=ADMIN, data={"repository": item["repository"], "path": item["path"]})
             assert status in (200, 403, 503), (item, status, body)
@@ -70,6 +74,7 @@ def main():
                 if time.monotonic() > deadline or state == "denied":
                     raise AssertionError((item, state, body))
                 time.sleep(0.25)
+        print("explain_digest=" + catalog[1]["digest"], flush=True)
     elif phase == "verify":
         for item in catalog:
             status, body, headers = request(route(item))
@@ -78,6 +83,15 @@ def main():
             else:
                 assert status == 200 and hashlib.sha256(body).hexdigest() == item["digest"], (item, status, body[:300])
                 assert headers["x-packweir-sha256"] == item["digest"]
+                status, report, _ = request(f"/api/v1/artifacts/{item['digest']}?repository={item['repository']}", token=ADMIN)
+                assert status == 200, report
+                scopes = json.loads(report)["scopes"]
+                assert scopes and all(scope["scope"]["package"] and scope["decision"]["state"] == "approved" for scope in scopes), scopes
+                for scope in scopes:
+                    assert scope["scope"]["package"]["purl"].startswith("pkg:")
+                    assert scope["scope"]["package"]["basis"] in ("registry_path_observed", "registry_metadata_observed")
+                    if scope["scope"]["package"]["name"] == "@packweir/fixture":
+                        assert any(layer.startswith("scope:fixture-npm-scope:") for layer in scope["policy"]["layers"])
         original = Path(f"/fixtures/{first['digest']}.bytes").read_bytes()
         status, body, _ = request(route(first), headers={"Range": "bytes=0-3"})
         assert status == 206 and body == original[:4]

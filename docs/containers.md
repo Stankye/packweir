@@ -54,6 +54,7 @@ These versions are observations from local qualification. Client images track th
 
 Both storage modes also assert:
 
+- Approved native downloads expose observed coordinates/PURLs and per-delivery explanations; the npm scope fixture exercises additive namespace requirements.
 - A second gateway starts with the image's default configuration, health command, non-root user, and writable `/data`, without configuration or data mounts.
 - Missing credentials cannot download packages, and read credentials cannot access the administrative API.
 - Pending requests return `503` and `Retry-After`, including range requests; traversal and conflicting ZIP-header archives are denied with `403` after analysis.

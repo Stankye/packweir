@@ -38,6 +38,16 @@ enum Commands {
     },
     /// Inspect a staged artifact through the administrative API.
     Inspect { digest: String },
+    /// Explain each delivery scope, required check, evidence age, and next action.
+    Explain {
+        digest: String,
+        #[arg(long)]
+        repository: Option<String>,
+        #[arg(long, requires = "repository")]
+        origin: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Queue an artifact through native proxy routing (returns pending until approved).
     Prefetch { repository: String, path: String },
 }
@@ -106,6 +116,55 @@ async fn main() -> Result<()> {
                     .text()
                     .await?
             );
+        }
+        Commands::Explain {
+            digest,
+            repository,
+            origin,
+            json,
+        } => {
+            ensure!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "invalid SHA-256 digest"
+            );
+            let mut url = config
+                .public_url
+                .join(&format!("api/v1/artifacts/{digest}"))?;
+            {
+                let mut query = url.query_pairs_mut();
+                if let Some(repository) = repository {
+                    query.append_pair("repository", &repository);
+                }
+                if let Some(origin) = origin {
+                    query.append_pair("origin", &origin);
+                }
+            }
+            let response = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?
+                .get(url)
+                .bearer_auth(std::env::var("PACKWEIR_ADMIN_TOKEN")?)
+                .send()
+                .await?;
+            ensure!(
+                response.status() != reqwest::StatusCode::NOT_FOUND,
+                "artifact not registered for this scope; prefetch it first or adjust --repository/--origin"
+            );
+            let report: serde_json::Value = response.error_for_status()?.json().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                let scopes: Vec<packweir::explain::ScopeExplanation> =
+                    serde_json::from_value(report["scopes"].clone())?;
+                ensure!(
+                    !scopes.is_empty(),
+                    "server returned no delivery explanations"
+                );
+                print!("{}", packweir::explain::render(&digest, &scopes));
+            }
         }
         Commands::Prefetch { repository, path } => {
             let response = reqwest::Client::new()

@@ -18,6 +18,8 @@ Cache hits reuse retained original bytes and reevaluate current policy. They do 
 
 Current jobs are retried up to three times per queued run with lease recovery; exhausted expired leases become failed jobs. Evidence-context changes and manual rescans invalidate existing findings, and lease ownership/context checks prevent old workers from committing stale results. Adapters have wall-clock/output limits; full worker resource scheduling and isolation remain external responsibilities.
 
+[Package identities and scoped policies](policies.md) provide registry-path observations, additive repository and npm-namespace/Maven-group/exact-package requirements, independent delivery fingerprints over shared blobs, and CLI/API explanations. These do not establish publisher ownership, source trust, private/public routing precedence, automatic attestation discovery, or exception/promotion workflows.
+
 Sigstore v0.3 blob signatures, selected source-bound SLSA artifact verification, offline OSV mapped-package checks, and Hipcheck source policies are available through built-in drivers. Discovery, automatic identity mapping, additional builder/statement support, and package-manager-native signatures remain separate work. See the [integration catalog](integrations.md) and [native driver limits](native-drivers.md) for configuration and tool-specific status.
 
 ## Milestones

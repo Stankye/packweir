@@ -11,6 +11,8 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 ## Current implementation
 
 - Five registry adapters: npm, PyPI, Cargo sparse index, Maven/Gradle repositories, and NuGet v3.
+- Observed package coordinates/PURLs, additive repository and namespace/package policies, and isolated delivery approvals over shared blobs.
+- `packweir explain` with policy layers, per-check freshness, scanner availability, job state, and next actions.
 - Authenticated gateway and administrative API; separate administrative and package-read credentials.
 - Bounded upstream downloads with exact-origin allowlists, redirect validation, DNS pinning, and private-address rejection.
 - Content-addressed OpenDAL filesystem/S3 storage, verified reads, and optional post-delivery retention.
@@ -71,9 +73,12 @@ The first artifact request stages bytes and returns `503` with a digest and `Ret
 ```sh
 cargo run -- prefetch npm 'example/-/example-1.0.0.tgz'
 cargo run -- inspect '<sha256-digest>'
+cargo run -- explain '<sha256-digest>' --repository npm
 ```
 
 Prefetch exits unsuccessfully until approved. It uses the same route, storage, and policy path as clients; it does not bypass checks.
+
+See [package identities and scoped policies](docs/policies.md) for configuration and trust boundaries. Observed coordinates are not authenticated publisher/source identities. Scoped rules add requirements to the global baseline; unidentified packages remain pending where identity-based rules apply. Scoped npm/PyPI policies require discovery through the gateway before artifact approval.
 
 ## Administrative API
 
@@ -82,7 +87,7 @@ Every `/api/v1` request requires `Authorization: Bearer <admin-token>`.
 | Method | Path | Behavior |
 |---|---|---|
 | GET | `/api/v1/capabilities` | Experimental capability status |
-| GET | `/api/v1/artifacts/{digest}` | Current decision, evidence, and document references |
+| GET | `/api/v1/artifacts/{digest}` | Per-delivery decisions/explanations, evidence, and documents; optional `repository`/`origin` filters |
 | POST | `/api/v1/artifacts/{digest}/documents` | Preserve an external document, without asserting trust |
 | GET | `/api/v1/artifacts/{digest}/documents/{blob}` | Retrieve a document linked to this artifact |
 | POST | `/api/v1/artifacts/{digest}/rescan` | Expire current evidence and enqueue reanalysis |

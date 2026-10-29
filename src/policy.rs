@@ -4,6 +4,65 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PolicyRequirements {
+    pub revision: String,
+    #[serde(default)]
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub deny_on_failure: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyScope {
+    pub name: String,
+    pub repository: String,
+    pub namespace: Option<String>,
+    pub package: Option<String>,
+    pub policy: PolicyRequirements,
+}
+
+impl PolicyScope {
+    pub fn matches(&self, identity: &crate::identity::PackageIdentity) -> bool {
+        self.package.as_ref().is_none_or(|p| {
+            if identity.ecosystem == crate::model::Ecosystem::Cargo {
+                p.replace('_', "-") == identity.name.replace('_', "-")
+            } else {
+                p == &identity.name
+            }
+        }) && self.namespace.as_ref().is_none_or(|expected| {
+            identity.namespace.as_ref().is_some_and(|actual| {
+                actual == expected
+                    || (identity.ecosystem == crate::model::Ecosystem::Maven
+                        && actual
+                            .strip_prefix(expected)
+                            .is_some_and(|s| s.starts_with('.')))
+            })
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectivePolicy {
+    pub policy: Policy,
+    pub layers: Vec<String>,
+    pub identity_required: bool,
+}
+
+impl Policy {
+    pub fn extend(&mut self, additions: &PolicyRequirements) {
+        self.required.extend(additions.required.iter().cloned());
+        self.deny_on_failure
+            .extend(additions.deny_on_failure.iter().cloned());
+        self.required.sort();
+        self.required.dedup();
+        self.deny_on_failure.sort();
+        self.deny_on_failure.dedup();
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub revision: String,
     #[serde(default = "default_required")]

@@ -70,6 +70,19 @@ pub struct Artifact {
     pub size: i64,
     pub filename: String,
     pub content_type: String,
+    #[serde(default)]
+    pub package: Option<crate::identity::PackageIdentity>,
+}
+
+impl Artifact {
+    pub fn scope(&self) -> crate::identity::DeliveryScope {
+        crate::identity::DeliveryScope {
+            repository: self.repository.clone(),
+            origin: self.origin.clone(),
+            filename: self.filename.clone(),
+            package: self.package.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,6 +6,14 @@ use std::{
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("scope-report") {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input).unwrap();
+        let bundle = std::fs::read_to_string("evidence.json").unwrap();
+        assert_eq!(bundle.matches("\"repository\":").count(),1,"a delivery check must see exactly its own alias");
+        print!("{}",std::fs::read_to_string("resource-report").unwrap());
+        return;
+    }
     if matches!(
         args.first().map(String::as_str),
         Some("verify-artifact" | "scan" | "check")

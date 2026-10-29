@@ -32,7 +32,7 @@ path = "/etc/packweir/trust/sigstore-trusted-root.json"
 sha256 = "<lowercase-sha256-of-trust-root>"
 ```
 
-Add `required_signature` to the existing `policy.required` list to enforce it. The default sample policy still requires inventory/archive checks only. Signer expectations currently apply globally to the configured check; repository/namespace-specific trust routing is future work. On Windows, use absolute executable/resource paths, for example TOML literal strings such as `'C:\Packweir\tools\cosign.exe'`.
+Add `required_signature` to the existing `policy.required` list to enforce it. The default sample policy still requires inventory/archive checks only. Signer expectations apply to the configured check. Additional named signature checks can carry different expectations and be required by [repository or namespace policy](policies.md); automatic signer discovery remains future work. On Windows, use absolute executable/resource paths, for example TOML literal strings such as `'C:\Packweir\tools\cosign.exe'`.
 
 The administrative document endpoint now accepts `kind="sigstore_bundle"`; submit the bundle JSON unchanged in the `document` field with `origin="publisher_declared"`. Ingestion records an unverified document and invalidates the previous evidence context. A subsequent request/rescan queues analysis. No registry-specific bundle discovery is implemented. The driver tries at most eight candidate documents within one configured execution budget; any one valid signature satisfying the configured signer policy is sufficient. More than eight candidates keep the check inconclusive. Document replacement/pruning is future work.
 
