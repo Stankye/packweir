@@ -199,6 +199,7 @@ fn validate_archive(bytes: &[u8]) -> Result<()> {
         !archive.is_empty() && archive.len() <= 200_000,
         "OSV database entry limit exceeded or empty database"
     );
+    archive.validate_header_consistency()?;
     let mut size = 0u64;
     for index in 0..archive.len() {
         let entry = archive.by_index(index)?;
@@ -207,7 +208,7 @@ fn validate_archive(bytes: &[u8]) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("OSV database size overflow"))?;
         ensure!(
             entry.enclosed_name().is_some()
-                && crate::bounds::safe_path(entry.name().trim_end_matches('/'))
+                && crate::bounds::safe_path(entry.name()?.trim_end_matches('/'))
                 && entry.size() <= 16 * 1024 * 1024
                 && size <= 1024 * 1024 * 1024,
             "OSV database contains unsafe paths or exceeds expansion limits"

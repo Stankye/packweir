@@ -56,7 +56,7 @@ Both storage modes also assert:
 
 - A second gateway starts with the image's default configuration, health command, non-root user, and writable `/data`, without configuration or data mounts.
 - Missing credentials cannot download packages, and read credentials cannot access the administrative API.
-- Pending requests return `503` and `Retry-After`, including range requests; a traversal archive is denied with `403` after analysis.
+- Pending requests return `503` and `Retry-After`, including range requests; traversal and conflicting ZIP-header archives are denied with `403` after analysis.
 - Approved artifacts retain their exact SHA-256 digest, and approved single-byte-range responses match the original bytes.
 - Client authorization headers never reach the upstream fixture service.
 - Approved retained bytes remain available after stopping the upstream; corrupting the underlying filesystem blob or S3 object prevents delivery, and restoring the original bytes restores access.

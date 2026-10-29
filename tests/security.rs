@@ -224,6 +224,29 @@ fn archive_traversal_and_expansion_limits_reject() {
 }
 
 #[test]
+fn zip_header_disagreements_cannot_hide_a_different_filename_or_compression() {
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file("evil.exe", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"harmless regression fixture").unwrap();
+    let original = zip.finish().unwrap().into_inner();
+    assert!(inventory::inspect("fixture.zip", &original, Limits::default()).is_ok());
+    let central = original
+        .windows(4)
+        .position(|v| v == b"PK\x01\x02")
+        .unwrap();
+    let mut renamed = original.clone();
+    // Only the central directory claims a benign name; streaming readers still see evil.exe.
+    renamed[central + 46..central + 54].copy_from_slice(b"safe.txt");
+    let mut compression = original;
+    // Change the local compression method without changing the central directory.
+    compression[8..10].copy_from_slice(&99u16.to_le_bytes());
+    for bytes in [renamed, compression] {
+        assert!(inventory::inspect("cloaked.whl", &bytes, Limits::default()).is_err());
+    }
+}
+
+#[test]
 fn unsupported_compression_is_not_approved_as_an_opaque_file() {
     for bytes in [
         b"BZhfake".as_slice(),

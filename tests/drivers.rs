@@ -345,20 +345,24 @@ async fn osv_rejects_stale_substituted_and_unsafe_database_snapshots() {
             .await
             .is_err()
     );
-    let bytes = archive("../outside.json");
-    std::fs::write(&good.path, &bytes).unwrap();
-    let mut bad = good;
-    bad.sha256 = sha256(&bytes);
-    let mut scanner = scanner;
-    scanner.driver = ScannerDriver::Osv {
-        packages: vec![package()],
-        databases: BTreeMap::from([("npm".into(), bad)]),
-    };
-    assert!(
-        scanner::run(&scanner, &job(), b"fixture", &bundle())
-            .await
-            .is_err()
-    );
+    let mut cloaked = archive("TEST.json");
+    let central = cloaked.windows(4).position(|v| v == b"PK\x01\x02").unwrap();
+    cloaked[central + 46..central + 55].copy_from_slice(b"HIDE.json");
+    for bytes in [archive("../outside.json"), cloaked] {
+        std::fs::write(&good.path, &bytes).unwrap();
+        let mut bad = good.clone();
+        bad.sha256 = sha256(&bytes);
+        let mut scanner = scanner.clone();
+        scanner.driver = ScannerDriver::Osv {
+            packages: vec![package()],
+            databases: BTreeMap::from([("npm".into(), bad)]),
+        };
+        assert!(
+            scanner::run(&scanner, &job(), b"fixture", &bundle())
+                .await
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]

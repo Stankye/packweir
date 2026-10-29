@@ -103,9 +103,12 @@ impl Inspector {
                 archive.len() <= self.limits.files,
                 "archive file-count limit exceeded"
             );
+            // Consumers must not see different filenames or payload metadata than the inspector.
+            archive.validate_header_consistency()?;
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i)?;
-                ensure!(safe_path(entry.name()), "unsafe ZIP path");
+                let name = entry.name()?;
+                ensure!(safe_path(&name), "unsafe ZIP path");
                 ensure!(
                     entry.unix_mode().is_none_or(|m| m & 0o170000 != 0o120000),
                     "ZIP symlink rejected"
@@ -113,7 +116,7 @@ impl Inspector {
                 if entry.is_dir() {
                     continue;
                 }
-                let nested = format!("{path}!/{}", entry.name());
+                let nested = format!("{path}!/{name}");
                 let content = self.bounded_read(&mut entry)?;
                 self.visit(&nested, &content, depth + 1)?;
             }
@@ -202,7 +205,7 @@ pub fn spdx(inventory: &Inventory) -> serde_json::Value {
     serde_json::json!({"spdxVersion":"SPDX-2.3", "dataLicense":"CC0-1.0", "SPDXID":"SPDXRef-DOCUMENT",
         "name":format!("Packweir observed inventory {}", inventory.subject),
         "documentNamespace":format!("https://packweir.invalid/spdx/{}", uuid::Uuid::new_v4()),
-        "creationInfo":{"creators":["Tool: packweir-0.1.0"],"created":chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()},
+        "creationInfo":{"creators":[format!("Tool: packweir-{}", env!("CARGO_PKG_VERSION"))],"created":chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()},
         "comment":inventory.coverage,
         "files":inventory.files.iter().enumerate().map(|(i,f)| serde_json::json!({"SPDXID":format!("SPDXRef-File-{i}"),
             "fileName":f.path, "checksums":[{"algorithm":"SHA256","checksumValue":f.sha256}],

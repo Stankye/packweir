@@ -106,6 +106,11 @@ def fixtures():
     bad = archive({"../escape": b"blocked fixture"})
     add("npm", "blocked/-/blocked-1.0.0.tgz", bad)
     CATALOG[-1]["denied"] = True
+    cloaked = bytearray(archive({"evil.exe": b"harmless header-disagreement fixture"}, zipped=True))
+    central = cloaked.index(b"PK\x01\x02")
+    cloaked[central + 46:central + 54] = b"safe.txt"
+    add("nuget", "flat/cloaked/1.0.0/cloaked.1.0.0.nupkg", bytes(cloaked))
+    CATALOG[-1]["denied"] = True
     (ROOT / "catalog.json").write_text(json.dumps(CATALOG))
     for item in CATALOG:
         (ROOT / (item["digest"] + ".bytes")).write_bytes(FILES[item["wire"]][0])
