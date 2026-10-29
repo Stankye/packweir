@@ -111,6 +111,8 @@ services:
   worker:
     <<: *app
     command: [--config, /app/e2e.toml, worker]
+    healthcheck:
+      disable: true
     depends_on:
       gateway:
         condition: service_healthy

@@ -33,6 +33,8 @@ services:
   worker:
     build: .
     command: [--config, /app/packweir.container.toml, worker]
+    healthcheck:
+      disable: true
     environment:
       DATABASE_URL: postgres://packweir:${PACKWEIR_DB_PASSWORD}@postgres/packweir
       RUST_LOG: packweir=info

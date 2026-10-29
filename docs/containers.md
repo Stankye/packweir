@@ -8,7 +8,7 @@ For the example deployment, copy `.env.example` to `.env`, choose distinct crede
 docker compose up --build --wait
 ```
 
-Compose waits for PostgreSQL before starting the gateway and for gateway readiness before starting the worker. Its explicit health command uses the mounted configuration. The image's default health command is `packweir health`; custom deployments using another configuration path must supply `packweir --config /path/to/config.toml health`.
+Compose waits for PostgreSQL before starting the gateway and for gateway readiness before starting the worker. Its explicit health command uses the mounted configuration. The image's default health command is `packweir health`; custom gateway deployments using another configuration path must supply `packweir --config /path/to/config.toml health`. Workers do not expose HTTP endpoints, so both Compose stacks disable the inherited gateway health check on workers; custom worker containers need the same override or `--no-healthcheck`.
 
 `/health` reports process liveness. `/ready` checks PostgreSQL with `SELECT 1` and checks blob storage through OpenDAL, within a three-second budget. Failures return `503` with `{"ready":false}`; success returns `200` with `{"ready":true}`. These unauthenticated responses expose no dependency error details. The CLI probes the configured listen address locally, converts wildcard binds to loopback, and ignores HTTP proxy environment variables.
 

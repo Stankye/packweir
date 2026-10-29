@@ -94,7 +94,7 @@ def main():
                 compose("build","gateway",log_name="build.log",timeout=1200)
             compose("up","-d","--wait","--wait-timeout","180","gateway","image-defaults",timeout=300)
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","pending")
-            compose("up","-d","--no-deps","worker")
+            compose("up","-d","--wait","--wait-timeout","15","--no-deps","worker")
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","prefetch")
             clients = {}
             for name in CLIENTS:
