@@ -1,0 +1,19 @@
+<plugin>
+  <name>Packweir fixture</name>
+  <description>Local client qualification fixture</description>
+  <groupId>dev.packweir</groupId>
+  <artifactId>packweir-maven-plugin</artifactId>
+  <version>1.0.0</version>
+  <goalPrefix>packweir-fixture</goalPrefix>
+  <mojos><mojo>
+    <goal>check</goal>
+    <description>Resolve the fixture project dependencies</description>
+    <requiresDependencyResolution>compile</requiresDependencyResolution>
+    <requiresProject>true</requiresProject>
+    <implementation>dev.packweir.FixtureMojo</implementation>
+    <language>java</language>
+    <instantiationStrategy>per-lookup</instantiationStrategy>
+    <executionStrategy>once-per-session</executionStrategy>
+    <threadSafe>true</threadSafe>
+  </mojo></mojos>
+</plugin>

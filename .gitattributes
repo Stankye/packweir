@@ -1,3 +1,4 @@
 # Preserve the exact bytes covered by upstream signatures on every checkout.
 tests/fixtures/sigstore/* -text
 tests/fixtures/slsa/*.jsonl -text
+tests/e2e/** text eol=lf

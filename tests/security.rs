@@ -61,6 +61,52 @@ fn required_checks_fail_closed() {
         Decision::Approved
     );
 }
+
+#[test]
+fn routed_file_names_remain_visible_and_cannot_change_the_encoded_target() {
+    let public = "https://gateway.example/".parse().unwrap();
+    let original: url::Url =
+        "https://files.example/packages/pkg-1.0+build-py3-none-any.whl#sha256=abc"
+            .parse()
+            .unwrap();
+    let routed: url::Url = registry::wrap(&public, "pypi", &original).parse().unwrap();
+    assert!(routed.path().ends_with("pkg-1.0+build-py3-none-any.whl"));
+    assert_eq!(routed.fragment(), original.fragment());
+    let encoded = routed.path().split_once("/_fetch/").unwrap().1;
+    let decoded = percent_encoding::percent_decode_str(encoded)
+        .decode_utf8()
+        .unwrap();
+    assert_eq!(registry::unwrap_path(&decoded).unwrap(), original);
+    let token = encoded.split('/').next().unwrap();
+    assert_eq!(registry::unwrap_path(token).unwrap(), original);
+    assert!(registry::unwrap_path(&format!("{token}/other.whl")).is_err());
+    assert!(registry::unwrap_path(&format!("{token}/../other.whl")).is_err());
+    for target in [
+        "https://files.example/pkg%2Bbuild.whl?download=1#sha256=abc",
+        "https://files.example/unicode-%CE%BB%20file.whl",
+    ] {
+        let original = target.parse().unwrap();
+        let wrapped: url::Url = registry::wrap(&public, "pypi", &original).parse().unwrap();
+        let encoded = wrapped.path().split_once("/_fetch/").unwrap().1;
+        let decoded = percent_encoding::percent_decode_str(encoded)
+            .decode_utf8()
+            .unwrap();
+        assert_eq!(registry::unwrap_path(&decoded).unwrap(), original);
+    }
+    let directory: url::Url = "https://files.example/flat/".parse().unwrap();
+    let routed: url::Url = registry::wrap(&public, "nuget", &directory)
+        .parse()
+        .unwrap();
+    let prefix = routed.path().split_once("/_fetch/").unwrap().1;
+    assert_eq!(
+        registry::unwrap_path(&format!("{prefix}package/1.0/package.nupkg"))
+            .unwrap()
+            .as_str(),
+        "https://files.example/flat/package/1.0/package.nupkg"
+    );
+    assert!(registry::unwrap_path(&format!("{prefix}../other")).is_err());
+    assert!(registry::unwrap_path(&format!("{prefix}https://attacker.example/package")).is_err());
+}
 #[test]
 fn evidence_cannot_cross_subject_configuration_or_time() {
     let policy = Policy::default();
@@ -242,7 +288,14 @@ fn npm_integrity_and_native_urls_are_preserved_through_rewriting() {
         .unwrap();
     assert!(rewritten.starts_with("http://127.0.0.1:8080/r/npm/_fetch/"));
     let rewritten_url: url::Url = rewritten.parse().unwrap();
-    let token = rewritten_url.path().rsplit('/').next().unwrap();
+    let token = rewritten_url
+        .path()
+        .split_once("/_fetch/")
+        .unwrap()
+        .1
+        .split('/')
+        .next()
+        .unwrap();
     assert_eq!(rewritten_url.fragment(), Some("sha512=aGVsbG8="));
     assert_eq!(
         registry::unwrap(token).unwrap().fragment(),
@@ -307,7 +360,14 @@ fn pypi_client_hash_fragments_remain_visible() {
         .parse()
         .unwrap();
     assert_eq!(wrapped.fragment(), target.fragment());
-    let token = wrapped.path().rsplit('/').next().unwrap();
+    let token = wrapped
+        .path()
+        .split_once("/_fetch/")
+        .unwrap()
+        .1
+        .split('/')
+        .next()
+        .unwrap();
     assert_eq!(registry::unwrap(token).unwrap(), target);
 }
 

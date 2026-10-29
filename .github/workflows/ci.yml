@@ -3,6 +3,22 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qualify native clients with filesystem and S3-compatible storage
+        run: python3 tests/e2e/run.py --storage both
+      - name: Preserve qualification reports and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-client-qualification
+          path: |
+            target/e2e/**/*.json
+            target/e2e/**/*.log
+          if-no-files-found: warn
   rust:
     runs-on: ubuntu-latest
     services:

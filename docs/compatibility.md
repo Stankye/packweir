@@ -1,12 +1,12 @@
 # Compatibility and roadmap
 
-All native adapters are experimental and require real-client conformance testing. The implementation preserves package bytes while rewriting discovery/download locations. It does not claim Nexus or Artifactory feature parity.
+All native adapters are experimental. The [container client matrix](containers.md) qualifies selected authenticated install flows with six real clients against local fixtures using filesystem and S3-compatible storage. Full protocol conformance and broader version coverage remain open. The implementation preserves package bytes while rewriting discovery/download locations. It does not claim Nexus or Artifactory feature parity.
 
 | Ecosystem | Implemented routing | Important limitations |
 |---|---|---|
 | npm | Packuments, tarball links with SHA-512/SHA-1 binding, JSON security-resource forwarding | No publish, vulnerability-audit POST API, namespace reservation, or automatic provenance retrieval/verification. Download URLs outside configured origins are rejected. |
 | PyPI | HTML and JSON simple indexes, distribution/hash links, requires-python/yanked metadata | PEP 658 sidecar advertisement is disabled so clients download the gated distribution. JSON hashes use SHA-256 when supplied. Native attestation retrieval/verification is not implemented. Bzip2, XZ, Zstandard, RAR, and 7z archives are rejected until bounded inspection is implemented. |
-| Cargo | Sparse index, generated authenticated config, checksum-bound crate download route | No Git index, publishing, owner/yank API, or client credential-provider conformance validation. |
+| Cargo | Sparse index, generated authenticated config, checksum-bound crate download route; `cargo:token` exercised in the client matrix | No Git index, publishing, owner/yank API, or broader credential-provider/version conformance validation. |
 | Maven / Gradle | Artifact paths, POMs, snapshots, metadata, checksum/signature sidecars | POMs and artifacts are gated individually; no publishing, native signature verifier, or snapshot-cache freshness policy. Retained artifact paths must be invalidated explicitly when upstream bytes are mutable. |
 | NuGet | V3 service/discovery resource rewriting, package downloads, Basic authentication | No publishing/search conformance guarantee, trusted-signer policy integration, or built-in package signature verifier. Upstream signed package bytes remain unchanged. |
 
@@ -20,7 +20,7 @@ Sigstore v0.3 blob signatures, selected source-bound SLSA artifact verification,
 
 ## Milestones
 
-1. **Finish the initial evidence proxy:** Windows compilation and PostgreSQL tests pass; validate all five native clients and S3/container deployment; implement trusted scanner adapters, native provenance retrieval/verifiers, complete SBOM validation, license evidence and review models, metrics, safe garbage collection, mutable-artifact freshness, and namespace routing controls.
+1. **Finish the initial evidence proxy:** Windows compilation, PostgreSQL tests, selected native-client flows, and filesystem/S3-compatible container qualification are implemented; broaden client/version and storage-provider coverage; implement additional trusted scanner adapters, native provenance retrieval/verifiers, complete SBOM validation, license evidence and review models, metrics, safe garbage collection, mutable-artifact freshness, and namespace routing controls.
 2. **Deep analysis and advanced clients:** add selective Ghidra/deobfuscation, Assemblyline v4 submission/result integration, automatic agent escalation, OpenSSF Package Analysis, audit APIs, license obligation reports, a supported client/version matrix, and external OCI artifact/report storage through ORAS. OpenDAL remains the blob-storage abstraction; OCI artifact exchange is a separate transport capability.
 3. **Hosted repositories:** add private publishing, repository groups, namespace ownership, permissions, quarantine, immutable releases, digest-bound promotion, signing workflows, scoped review/exception workflows, and an administrative UI.
 4. **OCI distribution:** add hosted/proxied OCI manifests, blobs, tags, referrers, authentication, and ORAS conformance tests.

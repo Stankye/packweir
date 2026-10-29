@@ -34,6 +34,46 @@ fn config(root: &std::path::Path, origin: &str) -> Config {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn readiness_checks_dependencies_while_liveness_remains_available(pool: sqlx::PgPool) {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = Arc::new(config(temp.path(), "http://127.0.0.1:1/"));
+    let blobs = BlobStore::new(&settings.storage).unwrap();
+    let app = gateway::router(AppState::new(
+        settings,
+        Store { pool: pool.clone() },
+        blobs,
+        "a".repeat(32),
+        "r".repeat(32),
+    ));
+    let request = |path| Request::builder().uri(path).body(Body::empty()).unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(request("/ready"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    pool.close().await;
+    let response = app.clone().oneshot(request("/ready")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        b"{\"ready\":false}"
+    );
+    assert_eq!(
+        app.oneshot(request("/health")).await.unwrap().status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn first_download_releases_no_bytes_until_worker_approves(pool: sqlx::PgPool) {
     let temp = tempfile::tempdir().unwrap();
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));

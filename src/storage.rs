@@ -7,6 +7,10 @@ pub struct BlobStore {
     operator: Operator,
 }
 impl BlobStore {
+    pub async fn check(&self) -> Result<()> {
+        self.operator.check().await?;
+        Ok(())
+    }
     pub fn new(config: &StorageConfig) -> Result<Self> {
         let operator = match config {
             StorageConfig::Fs { root } => {

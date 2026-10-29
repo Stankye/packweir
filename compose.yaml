@@ -15,6 +15,8 @@ services:
   gateway:
     build: .
     command: [--config, /app/packweir.container.toml, serve]
+    healthcheck:
+      test: [CMD, packweir, --config, /app/packweir.container.toml, health]
     environment:
       DATABASE_URL: postgres://packweir:${PACKWEIR_DB_PASSWORD}@postgres/packweir
       PACKWEIR_ADMIN_TOKEN: ${PACKWEIR_ADMIN_TOKEN:?Set distinct tokens of at least 32 characters}
@@ -36,6 +38,8 @@ services:
       RUST_LOG: packweir=info
     depends_on:
       postgres:
+        condition: service_healthy
+      gateway:
         condition: service_healthy
     volumes:
       - ./packweir.container.toml:/app/packweir.container.toml:ro

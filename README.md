@@ -6,7 +6,7 @@ Packweir is an experimental package security gateway in Rust, licensed under MIT
 
 The product direction is an open-source artifact repository manager with supply-chain assurance, license compliance, and investigation workflows. Proxying and optional caching come first; hosted repositories, promotion, and OCI distribution follow. See the [product scope and assurance model](docs/product-scope.md) for the intended lifecycle, standards mapping, threat coverage, and acceptance criteria.
 
-The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** The Windows build and current test suite pass, including PostgreSQL/HTTP integration tests. Native package-manager conformance, Docker execution, and S3 integration remain unverified. This is an experimental source release; each required integration and deployment must be qualified before production enforcement.
+The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** Windows and Linux checks cover PostgreSQL/HTTP integration and real security-tool drivers. A Docker matrix exercises real npm, pip, Cargo, Maven, Gradle, and NuGet clients against local fixtures with both filesystem and S3-compatible storage. This validates selected authenticated install flows, not full registry conformance. See [container qualification](docs/containers.md) for coverage and reproduction. This remains an experimental source release.
 
 ## Current implementation
 
@@ -43,6 +43,8 @@ cargo run -- worker
 Use `$env:NAME='value'` in PowerShell. Schema migrations run automatically when the gateway or worker connects. The initial database account needs schema-creation privileges. A gateway and its workers must use identical security configuration and the same blob store.
 
 For containers, copy `.env.example` to `.env`, replace the credentials, and run `docker compose up --build`. The database password must be URL-safe. `packweir.container.toml` binds inside the container to all interfaces, while Compose publishes the gateway on host loopback. Change `public_url` to the client-visible origin when using another hostname or a TLS reverse proxy.
+
+`GET /health` is a liveness check. `GET /ready` checks database and blob-store connectivity, returning `503` when either is unavailable. Both endpoints are unauthenticated and omit dependency error details. `packweir health` probes readiness at the configured local listen address; the container health check uses this command. Readiness does not establish worker availability or security-policy coverage.
 
 For a local artifact inventory without PostgreSQL:
 
@@ -106,7 +108,13 @@ rustc --edition 2024 --test src/bounds.rs -o target/bounds-tests
 ./target/bounds-tests
 ```
 
-The full suite includes policy, archive expansion/traversal, binary inventory, integrity substitution, metadata rewriting, blob tampering, real HTTP gating, lease ownership, and evidence-context invalidation tests. CI supplies PostgreSQL. Real npm/pip/Cargo/Maven/Gradle/NuGet client-matrix tests remain required before claiming client compatibility.
+The full suite includes policy, archive expansion/traversal, binary inventory, integrity substitution, metadata rewriting, blob tampering, real HTTP gating, lease ownership, readiness, and evidence-context invalidation tests. CI supplies PostgreSQL and separately qualifies pinned Cosign, SLSA Verifier, OSV-Scanner, and Hipcheck binaries. The container job runs six native clients with filesystem and S3-compatible storage:
+
+```sh
+python3 tests/e2e/run.py --storage both
+```
+
+This matrix covers preapproved local fixtures, scoped npm packages, hash-locked wheels, Cargo credential providers, Maven plugin/dependency resolution, Gradle dependency resolution, and NuGet restore. It also checks pending/denied delivery, byte ranges, offline retained bytes, corrupted blobs, credential isolation, and dependency outages. Logs, client versions, and image identities are saved under `target/e2e/`. See [coverage and limitations](docs/containers.md) before applying these results to a deployment.
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 

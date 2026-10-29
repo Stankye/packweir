@@ -5,22 +5,56 @@ use serde_json::Value;
 use url::Url;
 
 pub fn wrap(public: &Url, name: &str, target: &Url) -> String {
-    let suffix = if target.path().ends_with('/') {
-        "/"
-    } else {
-        ""
-    };
-    let mut wrapped = format!(
-        "{}r/{name}/_fetch/{}{suffix}",
-        public,
-        URL_SAFE_NO_PAD.encode(target.as_str())
-    );
-    // Keep the expected digest inside the routed target AND visible to native clients.
-    if let Some(fragment) = target.fragment() {
-        wrapped.push('#');
-        wrapped.push_str(fragment);
+    let mut wrapped = public.clone();
+    let token = URL_SAFE_NO_PAD.encode(target.as_str());
+    {
+        let mut segments = wrapped.path_segments_mut().expect("HTTP gateway URL");
+        segments
+            .pop_if_empty()
+            .extend(["r", name, "_fetch", &token]);
+        if target.path().ends_with('/') {
+            segments.push("");
+        } else if let Some(filename) = filename(target) {
+            segments.push(&filename);
+        }
     }
-    wrapped
+    // Keep the expected digest inside the routed target AND visible to native clients.
+    wrapped.set_fragment(target.fragment());
+    wrapped.into()
+}
+
+fn filename(target: &Url) -> Option<String> {
+    percent_encoding::percent_decode_str(target.path().rsplit('/').next()?)
+        .decode_utf8()
+        .ok()
+        .map(|v| v.into_owned())
+}
+
+/// Displayed filenames cannot redirect a file request; directory resources remain appendable.
+pub fn unwrap_path(encoded: &str) -> Result<Url> {
+    let (token, tail) = encoded.split_once('/').unwrap_or((encoded, ""));
+    let base = unwrap(token)?;
+    if tail.is_empty() {
+        return Ok(base);
+    }
+    if base.path().ends_with('/') {
+        ensure!(
+            !tail.starts_with('/') && !tail.contains('\\') && !tail.split('/').any(|p| p == ".."),
+            "invalid registry resource suffix"
+        );
+        let joined = base.join(tail)?;
+        ensure!(
+            joined.origin() == base.origin(),
+            "registry suffix cannot change origin"
+        );
+        Ok(joined)
+    } else {
+        ensure!(
+            filename(&base).as_deref() == Some(tail),
+            "displayed filename does not match encoded target"
+        );
+        Ok(base)
+    }
 }
 pub fn unwrap(token: &str) -> Result<Url> {
     Ok(Url::parse(std::str::from_utf8(

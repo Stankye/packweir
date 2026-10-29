@@ -1482,6 +1482,7 @@ dependencies = [
  "http-body-util",
  "lol_html",
  "opendal",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

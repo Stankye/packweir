@@ -80,10 +80,32 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/ready", get(ready))
         .merge(admin)
         .merge(packages)
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
+}
+
+async fn ready(State(state): State<AppState>) -> Response {
+    let checked = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let database = async {
+            sqlx::query("SELECT 1").execute(&state.store.pool).await?;
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::try_join!(database, state.blobs.check())?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    if matches!(checked, Ok(Ok(()))) {
+        (StatusCode::OK, Json(json!({"ready":true}))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ready":false})),
+        )
+            .into_response()
+    }
 }
 
 pub fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -194,18 +216,7 @@ async fn target(state: &AppState, name: &str, path: &str, query: Option<&str>) -
         .get(name)
         .ok_or_else(|| anyhow::anyhow!("unknown repository"))?;
     let mut url = if let Some(encoded) = path.strip_prefix("_fetch/") {
-        let (token, tail) = encoded.split_once('/').unwrap_or((encoded, ""));
-        let base = registry::unwrap(token)?;
-        if tail.is_empty() {
-            base
-        } else {
-            ensure!(
-                base.path().ends_with('/'),
-                "URL is not an appendable registry resource"
-            );
-            // Joining must not permit a suffix to change the origin; allowed() is checked again below.
-            base.join(tail)?
-        }
+        registry::unwrap_path(encoded)?
     } else if let Some(download) = path.strip_prefix("_cargo/") {
         ensure!(repo.ecosystem == Ecosystem::Cargo, "not a Cargo repository");
         let parts: Vec<_> = download.split('/').collect();

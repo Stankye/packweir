@@ -1,6 +1,6 @@
 # Initial publication review
 
-This is an experimental source release with a passing Windows build and test suite, not a validated production gateway. The implementation and capability gaps are described in the README and compatibility matrix.
+This records the initial 2026-10-27 publication review. The validation counts and gaps below describe that snapshot. Current results and implementation limits are maintained in the [README](../README.md), [native drivers](native-drivers.md), and [container qualification](containers.md).
 
 ## Source review
 
@@ -34,13 +34,17 @@ Validated on 2026-10-27 using Rust 1.99.1 for Windows GNU, portable MinGW GCC/bi
 
 Network restrictions initially blocked validation; the results above were obtained after access was restored. Build-only portable tools and the isolated Cargo cache live under ignored `target/`, not in the published source.
 
-Remaining qualification gaps:
+Qualification gaps at initial publication:
 
 - Native npm, pip/uv, Cargo, Maven/Gradle, and NuGet conformance tests remain unfinished.
 - S3 integration and container execution have not been tested locally. CI provides a separate Linux/PostgreSQL check after publication.
 
-## Known implementation limits
+## Implementation limits at initial publication
 
 Tool-specific security adapters and built-in cryptographic provenance verification are not implemented. The sample policy only requires inventory/archive inspection. SBOM ingestion checks supported envelope shape, not full schemas or semantic completeness. Command adapters are trusted executables, not a sandbox. Deep analysis, conditional agent escalation, repository publishing/RBAC, OCI/ORAS, metrics, and safe garbage collection remain roadmap work.
 
 Fetch deduplication is process-local. Shared-blob cleanup is not coordinated with staging across multiple gateway replicas. Retained mutable upstream artifact paths are not automatically revalidated. These availability/freshness limitations must be resolved before production or replicated deployment.
+
+## Subsequent qualification
+
+Follow-up development added built-in Sigstore, SLSA Verifier, offline OSV-Scanner, and Hipcheck drivers with separate real-tool CI qualification. Docker qualification now covers selected authenticated install flows for npm, pip, Cargo, Maven, Gradle, and NuGet against local fixtures with both filesystem and RustFS-backed S3 storage. It also covers image defaults, policy gates, offline retained bytes, corrupted blobs, credential isolation, and dependency readiness failures. These results narrow the initial gaps; they do not establish full client conformance or production readiness.

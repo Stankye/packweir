@@ -28,6 +28,8 @@ enum Commands {
     },
     /// Validate configuration without connecting to any service.
     Validate,
+    /// Probe the local gateway readiness endpoint (database and blob storage).
+    Health,
     /// Inspect a local archive without executing package code.
     Inventory {
         path: PathBuf,
@@ -70,6 +72,25 @@ async fn main() -> Result<()> {
     let config = Arc::new(Config::load(&cli.config)?);
     match cli.command {
         Commands::Validate => println!("configuration valid: {}", config.fingerprint()),
+        Commands::Health => {
+            let mut address = config.listen;
+            if address.ip().is_unspecified() {
+                address.set_ip(if address.is_ipv4() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    std::net::Ipv6Addr::LOCALHOST.into()
+                });
+            }
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(4))
+                .build()?
+                .get(format!("http://{address}/ready"))
+                .send()
+                .await?
+                .error_for_status()?;
+            println!("ready");
+        }
         Commands::Inspect { digest } => {
             let url = config
                 .public_url
