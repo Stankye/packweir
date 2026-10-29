@@ -5,7 +5,7 @@ The production image builds the locked Rust dependency graph, runs as UID 10001,
 For the example deployment, copy `.env.example` to `.env`, choose distinct credentials, and run:
 
 ```sh
-docker compose up --build --wait
+docker compose up --build
 ```
 
 Compose waits for PostgreSQL before starting the gateway and for gateway readiness before starting the worker. Its explicit health command uses the mounted configuration. The image's default health command is `packweir health`; custom gateway deployments using another configuration path must supply `packweir --config /path/to/config.toml health`. Workers do not expose HTTP endpoints, so both Compose stacks disable the inherited gateway health check on workers; custom worker containers need the same override or `--no-healthcheck`.
