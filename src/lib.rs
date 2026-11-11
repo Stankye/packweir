@@ -1,11 +1,15 @@
+pub mod access;
 pub mod bounds;
 pub mod config;
 mod drivers;
 pub mod explain;
 pub mod gateway;
+pub mod hosted;
+pub mod hosted_http;
 pub mod identity;
 pub mod inventory;
 pub mod licenses;
+pub mod maven;
 pub mod model;
 pub mod network;
 pub mod operations;

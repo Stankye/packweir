@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "packweir"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1473,9 +1473,11 @@ dependencies = [
  "hex",
  "http-body-util",
  "lol_html",
+ "md-5",
  "opendal",
  "pep440_rs",
  "percent-encoding",
+ "quick-xml 0.38.4",
  "reqwest",
  "semver",
  "serde",

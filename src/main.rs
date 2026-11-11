@@ -32,6 +32,11 @@ enum Commands {
     Health,
     /// Inspect administrative queue, evidence, and recorded-storage statistics.
     Status,
+    /// Stage, inspect, seal, promote, or revoke an immutable hosted release.
+    Hosted {
+        #[command(subcommand)]
+        command: HostedCommands,
+    },
     /// Inspect a local archive without executing package code.
     Inventory {
         path: PathBuf,
@@ -52,6 +57,120 @@ enum Commands {
     },
     /// Queue an artifact through native proxy routing (returns pending until approved).
     Prefetch { repository: String, path: String },
+}
+
+#[derive(Subcommand)]
+enum HostedCommands {
+    /// Reserve immutable coordinates and print a native-publisher upload URL.
+    Stage {
+        repository: String,
+        name: String,
+        version: String,
+        #[arg(long)]
+        id: Option<uuid::Uuid>,
+    },
+    /// Inspect a stage, file bindings, and a recorded promotion receipt.
+    Status { id: uuid::Uuid },
+    /// Upload a single repository-relative file into an open stage.
+    Upload {
+        id: uuid::Uuid,
+        path: String,
+        file: PathBuf,
+    },
+    /// Freeze the complete file manifest and queue security analysis.
+    Seal { id: uuid::Uuid },
+    /// Abandon an open stage and release its never-sealed coordinate reservation.
+    Abort { id: uuid::Uuid },
+    /// Publish exactly the reviewed manifest after all current checks pass.
+    Promote {
+        id: uuid::Uuid,
+        #[arg(long)]
+        manifest: String,
+    },
+    /// Withdraw a release while preserving its immutable coordinate tombstone.
+    Revoke {
+        id: uuid::Uuid,
+        #[arg(long)]
+        manifest: String,
+    },
+}
+
+async fn hosted_command(config: &Config, command: HostedCommands) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let token = std::env::var("PACKWEIR_SERVICE_TOKEN")?;
+    let request = match command {
+        HostedCommands::Stage {
+            repository,
+            name,
+            version,
+            id,
+        } => {
+            ensure!(
+                !repository.is_empty()
+                    && repository
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+                "invalid repository name"
+            );
+            client.post(config.public_url.join(&format!("api/v1/repositories/{repository}/staging"))?)
+                .json(&serde_json::json!({"id":id.unwrap_or_else(uuid::Uuid::new_v4),"name":name,"version":version}))
+        }
+        HostedCommands::Status { id } => {
+            client.get(config.public_url.join(&format!("api/v1/staging/{id}"))?)
+        }
+        HostedCommands::Upload { id, path, file } => {
+            packweir::maven::validate_path(&path)?;
+            let bytes = scanner::read_bounded(
+                tokio::fs::File::open(file).await?,
+                config.max_download_bytes.min(128 * 1024 * 1024) as u64,
+            )
+            .await?;
+            client
+                .put(
+                    config
+                        .public_url
+                        .join(&format!("api/v1/staging/{id}/{path}"))?,
+                )
+                .body(bytes)
+        }
+        HostedCommands::Seal { id } => client.post(
+            config
+                .public_url
+                .join(&format!("api/v1/staging/{id}/seal"))?,
+        ),
+        HostedCommands::Abort { id } => client.post(
+            config
+                .public_url
+                .join(&format!("api/v1/staging/{id}/abort"))?,
+        ),
+        HostedCommands::Promote { id, manifest } => client
+            .post(
+                config
+                    .public_url
+                    .join(&format!("api/v1/staging/{id}/promote"))?,
+            )
+            .json(&serde_json::json!({"manifest_digest":manifest})),
+        HostedCommands::Revoke { id, manifest } => client
+            .post(
+                config
+                    .public_url
+                    .join(&format!("api/v1/staging/{id}/revoke"))?,
+            )
+            .json(&serde_json::json!({"manifest_digest":manifest})),
+    };
+    let response = request.bearer_auth(token).send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    if !text.is_empty() {
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+            Err(_) => println!("{text}"),
+        }
+    }
+    ensure!(status.is_success(), "hosted request failed: {status}");
+    Ok(())
 }
 
 #[tokio::main]
@@ -97,6 +216,7 @@ async fn main() -> Result<()> {
                 .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        Commands::Hosted { command } => hosted_command(&config, command).await?,
         Commands::Health => {
             let mut address = config.listen;
             if address.ip().is_unspecified() {
@@ -205,7 +325,8 @@ async fn main() -> Result<()> {
                         "use distinct admin/read tokens of at least 32 characters"
                     );
                     let listener = tokio::net::TcpListener::bind(config.listen).await?;
-                    let app = gateway::router(AppState::new(config, store, blobs, admin, read));
+                    let app =
+                        gateway::router(AppState::try_new(config, store, blobs, admin, read)?);
                     axum::serve(listener, app)
                         .with_graceful_shutdown(async {
                             let _ = tokio::signal::ctrl_c().await;

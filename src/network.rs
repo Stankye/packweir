@@ -12,11 +12,19 @@ pub struct Download {
     pub status: u16,
 }
 
+pub struct FetchGuard<'a> {
+    pub access: &'a crate::access::AccessConfig,
+    pub repository: &'a str,
+    pub principal: Option<&'a crate::access::Principal>,
+}
+
 pub fn allowed(repo: &Repository, url: &Url) -> bool {
+    let Ok(upstream) = repo.proxy_upstream() else {
+        return false;
+    };
     url.username().is_empty()
         && url.password().is_none()
-        && ((repo.upstream.origin() == url.origin()
-            && url.path().starts_with(repo.upstream.path()))
+        && ((upstream.origin() == url.origin() && url.path().starts_with(upstream.path()))
             || repo
                 .download_origins
                 .iter()
@@ -30,10 +38,50 @@ pub async fn fetch(
     max: usize,
     allow_private: bool,
 ) -> Result<Download> {
+    fetch_inner(repo, target, accept, max, allow_private, None).await
+}
+
+pub async fn fetch_guarded(
+    repo: &Repository,
+    target: &Url,
+    accept: Option<&str>,
+    max: usize,
+    allow_private: bool,
+    guard: &FetchGuard<'_>,
+) -> Result<Download> {
+    fetch_inner(repo, target, accept, max, allow_private, Some(guard)).await
+}
+
+async fn fetch_inner(
+    repo: &Repository,
+    target: &Url,
+    accept: Option<&str>,
+    max: usize,
+    allow_private: bool,
+    guard: Option<&FetchGuard<'_>>,
+) -> Result<Download> {
+    let upstream = repo.proxy_upstream()?;
     let mut current = target.clone();
     current.set_fragment(None);
     for _ in 0..6 {
         ensure!(allowed(repo, &current), "upstream origin is not allowed");
+        if let Some(guard) = guard {
+            ensure!(
+                guard
+                    .access
+                    .maven_url_allowed(guard.repository, repo, &current),
+                "Maven source ownership denied"
+            );
+            ensure!(
+                guard.principal.is_none_or(|principal| principal.allows_url(
+                    guard.repository,
+                    repo,
+                    crate::access::Action::Read,
+                    &current
+                )),
+                "upstream resource permission denied"
+            );
+        }
         ensure!(
             current.scheme() == "https" || (allow_private && current.scheme() == "http"),
             "HTTPS required"
@@ -68,8 +116,8 @@ pub async fn fetch(
             request = request.header(ACCEPT, accept);
         }
         // Credentials are operator-owned and never forwarded to a download/redirect origin.
-        if current.origin() == repo.upstream.origin()
-            && current.path().starts_with(repo.upstream.path())
+        if current.origin() == upstream.origin()
+            && current.path().starts_with(upstream.path())
             && let Some(name) = &repo.token_env
         {
             request = request.header(AUTHORIZATION, format!("Bearer {}", std::env::var(name)?));

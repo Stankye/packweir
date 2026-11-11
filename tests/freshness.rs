@@ -102,7 +102,7 @@ impl Fixture {
         config.allow_private_upstreams = true;
         config.repositories.retain(|name, _| name == "npm");
         let repo = config.repositories.get_mut("npm").unwrap();
-        repo.upstream = upstream_url.parse().unwrap();
+        repo.upstream = Some(upstream_url.parse().unwrap());
         repo.cache_max_age_seconds = max_age;
         config.validate().unwrap();
         let config = Arc::new(config);

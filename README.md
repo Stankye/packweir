@@ -4,13 +4,15 @@ Control what flows into your software supply chain.
 
 Packweir is an experimental package security gateway in Rust, licensed under MIT OR Apache-2.0. The name combines packages with a weir: a gate that regulates flow.
 
-The product direction is an open-source artifact repository manager with supply-chain assurance, license compliance, and investigation workflows. Proxying and optional caching come first; hosted repositories, promotion, and OCI distribution follow. See the [product scope and assurance model](docs/product-scope.md) for the intended lifecycle, standards mapping, threat coverage, and acceptance criteria.
+The product direction is an open-source artifact repository manager with supply-chain assurance, license compliance, and investigation workflows. Proxying, optional caching, and staged immutable Maven hosting are implemented; broader hosting, repository groups, and OCI distribution follow. See the [product scope and assurance model](docs/product-scope.md) for the intended lifecycle, standards mapping, threat coverage, and acceptance criteria.
 
 The repository contains the initial proxy, evidence, policy, storage, and worker implementation. **The full architecture roadmap is not implemented.** Windows and Linux checks cover PostgreSQL/HTTP integration and real security-tool drivers. A Docker matrix exercises real npm, pip, Cargo, Maven, Gradle, and NuGet clients against local fixtures with both filesystem and S3-compatible storage. This validates selected authenticated install flows, not full registry conformance. See [container qualification](docs/containers.md) for coverage and reproduction. This remains an experimental source release.
 
 ## Current implementation
 
 - Five registry adapters: npm, PyPI, Cargo sparse index, Maven/Gradle repositories, and NuGet v3.
+- Hosted Maven releases with native Gradle uploads, sealed manifests, evidence-bound promotion, terminal revocation, and Maven/Gradle consumption.
+- Scoped service credentials with independent read/write/promote grants and Maven namespace ownership that prevents public-proxy fallback.
 - Observed package coordinates/PURLs, additive repository and namespace/package policies, and isolated delivery approvals over shared blobs.
 - `packweir explain` with policy layers, per-check freshness, scanner availability, job state, and next actions.
 - Authenticated gateway and administrative API; separate administrative and package-read credentials.
@@ -85,7 +87,7 @@ See [package identities and scoped policies](docs/policies.md) for configuration
 
 ## Administrative API
 
-Every `/api/v1` request requires `Authorization: Bearer <admin-token>`.
+The administrative endpoints below require `Authorization: Bearer <admin-token>`. The separate [hosted release APIs](docs/hosted.md) require scoped service credentials; those credentials cannot access these administrative endpoints.
 
 | Method | Path | Behavior |
 |---|---|---|
@@ -129,4 +131,4 @@ See [license observations](docs/licenses.md) to configure ScanCode/SPDX policy a
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 
-See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing, repository groups, RBAC, promotion, a UI, and VM sandboxing remain unfinished.
+See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing beyond immutable Maven releases, repository groups, general RBAC, cross-repository promotion, a UI, and VM sandboxing remain unfinished. See [hosted releases](docs/hosted.md) for supported publishing workflows and limits.

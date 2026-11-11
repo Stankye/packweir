@@ -28,7 +28,7 @@ fn config(root: &std::path::Path, origin: &str) -> Config {
         root: root.to_string_lossy().into(),
     };
     config.repositories.retain(|name, _| name == "npm");
-    config.repositories.get_mut("npm").unwrap().upstream = origin.parse().unwrap();
+    config.repositories.get_mut("npm").unwrap().upstream = Some(origin.parse().unwrap());
     config.allow_private_upstreams = true;
     config
 }

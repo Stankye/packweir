@@ -1,6 +1,6 @@
 [package]
 name = "packweir"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "An evidence-driven, fail-closed package registry gateway"
@@ -16,9 +16,11 @@ clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 hex = "0.4"
 lol_html = "2"
+md-5 = "0.10.6"
 opendal = { version = "0.54", default-features = false, features = ["executors-tokio", "services-fs", "services-s3"] }
 percent-encoding = "2"
 pep440_rs = "0.7.3"
+quick-xml = "0.38.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

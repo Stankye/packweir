@@ -7,6 +7,8 @@ x-app: &app
     DATABASE_URL: postgres://packweir:fixture-db@postgres/packweir
     PACKWEIR_ADMIN_TOKEN: fixture-admin-token-0000000000000000
     PACKWEIR_READ_TOKEN: fixture-read-token-00000000000000000
+    PACKWEIR_PUBLISH_TOKEN: fixture-publish-token-000000000000000
+    PACKWEIR_PROMOTE_TOKEN: fixture-promote-token-000000000000000
     AWS_ACCESS_KEY_ID: fixture-access-key
     AWS_SECRET_ACCESS_KEY: fixture-secret-key-000000000000000
     AWS_EC2_METADATA_DISABLED: "true"
@@ -126,6 +128,8 @@ services:
     environment:
       PACKWEIR_ADMIN_TOKEN: fixture-admin-token-0000000000000000
       PACKWEIR_READ_TOKEN: fixture-read-token-00000000000000000
+      PACKWEIR_PUBLISH_TOKEN: fixture-publish-token-000000000000000
+      PACKWEIR_PROMOTE_TOKEN: fixture-promote-token-000000000000000
     volumes:
       - ./:/tests:ro
       - fixtures:/fixtures:ro
@@ -170,6 +174,16 @@ services:
     <<: *client
     image: gradle:8.14-jdk21
     entrypoint: [sh, /tests/clients/gradle.sh]
+
+  hosted-publish:
+    <<: *client
+    image: gradle:8.14-jdk21
+    entrypoint: [sh, /tests/clients/hosted-publish.sh]
+    environment:
+      PACKWEIR_PUBLISH_TOKEN: fixture-publish-token-000000000000000
+    volumes:
+      - ./:/tests:ro
+      - fixtures:/fixtures:ro
 
   nuget:
     <<: *client

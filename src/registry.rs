@@ -93,7 +93,7 @@ pub fn rewrite_json(value: &mut Value, repo: &Repository, name: &str, public: &U
                 && map.contains_key("url")
             {
                 if let Some(raw) = map.get("url").and_then(Value::as_str) {
-                    let mut url = repo.upstream.join(raw)?;
+                    let mut url = repo.proxy_upstream()?.join(raw)?;
                     ensure!(
                         allowed(repo, &url),
                         "PyPI distribution origin must be configured"

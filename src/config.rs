@@ -21,6 +21,8 @@ pub struct Config {
     pub policy: Policy,
     #[serde(default)]
     pub policy_scopes: Vec<crate::policy::PolicyScope>,
+    #[serde(default)]
+    pub access: crate::access::AccessConfig,
     pub repositories: BTreeMap<String, Repository>,
     #[serde(default)]
     pub scanners: BTreeMap<String, CommandScanner>,
@@ -56,8 +58,10 @@ pub enum StorageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Repository {
+    #[serde(default)]
+    pub kind: RepositoryKind,
     pub ecosystem: Ecosystem,
-    pub upstream: Url,
+    pub upstream: Option<Url>,
     /// Exact origins (scheme, host, port), never suffix-matched hostnames.
     #[serde(default)]
     pub download_origins: Vec<Url>,
@@ -67,6 +71,24 @@ pub struct Repository {
     pub cargo_download_template: Option<String>,
     pub policy: Option<crate::policy::PolicyRequirements>,
     pub cache_max_age_seconds: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryKind {
+    #[default]
+    Proxy,
+    Hosted,
+}
+impl Repository {
+    pub fn proxy_upstream(&self) -> Result<&Url> {
+        ensure!(
+            self.kind == RepositoryKind::Proxy,
+            "hosted repositories have no upstream"
+        );
+        self.upstream
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("proxy upstream required"))
+    }
 }
 fn yes() -> bool {
     true
@@ -662,15 +684,29 @@ impl Config {
                 !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
                 "invalid repository name"
             );
+            if repo.kind == RepositoryKind::Hosted {
+                ensure!(
+                    repo.ecosystem == Ecosystem::Maven
+                        && repo.retain
+                        && repo.upstream.is_none()
+                        && repo.download_origins.is_empty()
+                        && repo.token_env.is_none()
+                        && repo.cargo_download_template.is_none()
+                        && repo.cache_max_age_seconds.is_none(),
+                    "hosted repositories require Maven, retained bytes, and no proxy settings"
+                );
+                continue;
+            }
+            let upstream = repo.proxy_upstream()?;
             ensure!(
-                repo.upstream.path().ends_with('/'),
+                upstream.path().ends_with('/'),
                 "upstream must end with /: {name}"
             );
             ensure!(
-                repo.upstream.query().is_none(),
+                upstream.query().is_none(),
                 "upstream base must not contain a query"
             );
-            for url in std::iter::once(&repo.upstream).chain(&repo.download_origins) {
+            for url in std::iter::once(upstream).chain(&repo.download_origins) {
                 ensure!(
                     url.scheme() == "https"
                         || (self.allow_private_upstreams && url.scheme() == "http"),
@@ -691,6 +727,7 @@ impl Config {
                 );
             }
         }
+        self.access.validate(&self.repositories)?;
         for (name, scanner) in &self.scanners {
             scanner.validate()?;
             ensure!(

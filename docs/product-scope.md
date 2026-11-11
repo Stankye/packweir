@@ -54,13 +54,13 @@ License compliance needs an evidence and review workflow of its own. Planned req
 - Generate reviewable attribution/notice bundles and obligation reports bound to the promoted release and its dependency graph. Link corrections to new report revisions while retaining prior decisions.
 - Support authorized reviews and scoped, expiring exceptions with rationale, approver, affected artifacts/releases, and outstanding actions. Mandatory integrity and signature requirements remain separate from exceptionable policy rules.
 
-Packweir currently has no complete license scanning, SPDX-expression evaluation, obligation engine, or compliance review workflow. Its observed file inventories and external-document storage are inputs to that future work.
+Packweir provides bounded ScanCode file observations and SPDX-expression policy evaluation. Complete license coverage, legal obligations, attribution bundles, and compliance review workflows remain unfinished; see [license observations](licenses.md).
 
 ## Investigation and analysis
 
 MITRE Hipcheck, OpenSSF tools, Microsoft OSSGadget, custom checks, and vulnerability/license scanners provide different observations. Each adapter needs a coverage contract, normalized outcomes, pinned configuration, and qualification fixtures. Tools must not silently substitute for each other.
 
-The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck custom plugins, the OSSGadget suite, OSV-Scanner/OSV-SCALIBR, deps.dev, SLSA Verifier, and graph exchange. Implemented foundations include Cosign blob signatures, source-bound SLSA verification for supported inputs, offline OSV mapped-package checks, Hipcheck policies with plugin pins, and pinned adapter resources. Automated mapping/discovery and the remaining tool-specific integrations are future work; see the [native driver limits](native-drivers.md).
+The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck custom plugins, the OSSGadget suite, OSV-Scanner/OSV-SCALIBR, deps.dev, SLSA Verifier, and graph exchange. Implemented foundations include Cosign blob signatures, source-bound SLSA verification for supported inputs, offline OSV mapped-package checks, Hipcheck policies with plugin pins, and pinned adapter resources. Observed-coordinate OSV mapping is available; automated source/provenance discovery and the remaining tool-specific integrations are future work; see the [native driver limits](native-drivers.md).
 
 Assemblyline v4 (ASv4) is a planned external analysis integration. Its selected services should produce attributable findings and extracted-file relationships, not one universal approval score. Ghidra and deobfuscation may run through dedicated helpers or services where available. Preserve transformation chains; sandbox any execution. THOR and DRAKVUF-class execution remain specialized stretch integrations. See the [scanner protocol and Assemblyline design](scanners.md).
 
@@ -68,7 +68,7 @@ Agentic checks should be conditional escalation for bounded questions raised by 
 
 ## Repository operations and advanced clients
 
-The target repository layer includes hosted/proxy/group repositories, private namespace routing, scoped permissions, short-lived service credentials, immutable releases, quarantine/release workflows, digest-bound promotion, and audit exports. Promotion must preserve original bytes and bind the evidence/policy used for the decision. UI, SSO/RBAC, repository administration, and review queues follow the evidence foundation.
+The target repository layer includes hosted/proxy/group repositories, private namespace routing, scoped permissions, short-lived service credentials, immutable releases, quarantine/release workflows, digest-bound promotion, and audit exports. Promotion must preserve original bytes and bind the evidence/policy used for the decision. Staged immutable Maven hosting, scoped service credentials, Maven source ownership, and evidence-bound publication/revocation are implemented; see [hosted releases](hosted.md). UI, SSO/general RBAC, cross-repository promotion, repository groups, and review queues remain unfinished.
 
 Advanced-client work needs a documented version matrix and real npm, pip/uv, Cargo, Maven/Gradle, and NuGet tests. Qualify discovery, resolution, hashes, authentication, retries while scans are pending, metadata freshness, yanks/snapshots, signatures/attestations, applicable audit APIs, and sidecars. Unsupported behavior must be documented; forwarding a response is not a compatibility guarantee.
 

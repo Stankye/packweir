@@ -1,5 +1,6 @@
 """Frontend-only policy, byte-integrity, and topology assertions."""
 import hashlib
+import base64
 import json
 import os
 from pathlib import Path
@@ -12,18 +13,20 @@ import urllib.request
 BASE = "http://gateway:8080"
 READ = os.environ["PACKWEIR_READ_TOKEN"]
 ADMIN = os.environ.get("PACKWEIR_ADMIN_TOKEN", "")
+PUBLISH = os.environ.get("PACKWEIR_PUBLISH_TOKEN", "")
+PROMOTE = os.environ.get("PACKWEIR_PROMOTE_TOKEN", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def request(path, token=READ, data=None, headers=None):
+def request(path, token=READ, data=None, headers=None, method=None):
     values = dict(headers or {})
     if token:
         values["Authorization"] = "Bearer " + token
-    if data is not None:
+    if data is not None and not isinstance(data, bytes):
         data = json.dumps(data).encode()
         values["Content-Type"] = "application/json"
     try:
-        with OPENER.open(urllib.request.Request(BASE + path, data=data, headers=values), timeout=10) as response:
+        with OPENER.open(urllib.request.Request(BASE + path, data=data, headers=values, method=method), timeout=10) as response:
             return response.status, response.read(), response.headers
     except urllib.error.HTTPError as error:
         return error.code, error.read(), error.headers
@@ -33,8 +36,134 @@ def route(item):
     return f"/r/{item['repository']}/{item['path']}"
 
 
+HOSTED_ROOT = "dev/packweir/private/hosted-fixture"
+HOSTED_PREFIX = HOSTED_ROOT + "/1.0.0/hosted-fixture-1.0.0"
+HOSTED_PUBLIC = "/r/maven-local/"
+
+
+def basic(token):
+    return {"Authorization": "Basic " + base64.b64encode(("publisher:" + token).encode()).decode()}
+
+
+def stage_info(stage_id):
+    status, body, _ = request("/api/v1/staging/" + stage_id, token=PUBLISH)
+    assert status == 200, (status, body)
+    return json.loads(body)
+
+
+def assert_hosted_hidden():
+    for path in [HOSTED_PREFIX + extension for extension in [".jar", ".pom", ".jar.sha1", ".jar.sha256", ".jar.md5"]] + [HOSTED_ROOT + "/maven-metadata.xml"]:
+        for method in ["GET", "HEAD"]:
+            status, body, _ = request(HOSTED_PUBLIC + path, method=method)
+            assert status == 404, (path, method, status, body)
+        status, body, _ = request(HOSTED_PUBLIC + path, headers={"Range":"bytes=0-3"})
+        assert status == 404, (path, status, body)
+
+
+def hosted(phase, stage_id):
+    stage_url = "/api/v1/staging/" + stage_id
+    if phase == "hosted-create":
+        payload = {"id":stage_id, "name":"dev.packweir.private:hosted-fixture", "version":"1.0.0"}
+        for token in [READ, PROMOTE]:
+            status, body, _ = request("/api/v1/repositories/maven-local/staging", token=token, data=payload)
+            assert status == 403, (status, body)
+        status, body, _ = request("/api/v1/repositories/maven-local/staging", token=PUBLISH, data=dict(payload, version="1.0-SNAPSHOT"))
+        assert status == 400, (status, body)
+        status, body, _ = request("/api/v1/repositories/maven-local/staging", token=PUBLISH, data=dict(payload, name="outside.namespace:fixture"))
+        assert status == 403, (status, body)
+        status, body, _ = request("/api/v1/repositories/maven-local/staging", token=PUBLISH, data=payload)
+        created = json.loads(body)
+        assert status == 201 and created["id"] == stage_id, (status, body)
+        assert created["upload_url"] == BASE + stage_url + "/", body
+        assert_hosted_hidden()
+    elif phase == "hosted-seal":
+        info = stage_info(stage_id)
+        assert {item["path"] for item in info["files"]} == {HOSTED_PREFIX + ".jar", HOSTED_PREFIX + ".pom"}, info
+        source = Path("/fixtures/java/library.jar").read_bytes()
+        upload = stage_url + "/" + HOSTED_PREFIX + ".jar"
+        status, body, _ = request(upload, token=None, headers=basic(PUBLISH), data=source, method="PUT")
+        assert status in (201, 204), (status, body)
+        status, body, _ = request(upload, token=None, headers=basic(PUBLISH), data=b"changed release bytes", method="PUT")
+        assert status == 409, (status, body)
+        status, body, _ = request(upload + ".sha256", token=PUBLISH, data=b"0" * 64, method="PUT")
+        assert status == 400, (status, body)
+        status, body, _ = request(stage_url + "/seal", token=READ, method="POST")
+        assert status == 403, (status, body)
+        status, body, _ = request(stage_url + "/seal", token=PUBLISH, method="POST")
+        assert status == 200, (status, body)
+        info = stage_info(stage_id)
+        manifest = info["stage"]["manifest_digest"]
+        assert len(manifest) == 64, info
+        for token in [READ, PUBLISH]:
+            status, body, _ = request(stage_url + "/promote", token=token, data={"manifest_digest":manifest})
+            assert status == 403, (status, body)
+        status, body, _ = request(stage_url + "/promote", token=PROMOTE, data={"manifest_digest":manifest})
+        assert status == 409 and json.loads(body)["error"] == "release_not_approved", (status, body)
+        status, body, _ = request(upload, token=PUBLISH, data=source, method="PUT")
+        assert status == 409, (status, body)
+        assert_hosted_hidden()
+    elif phase == "hosted-promote":
+        info = stage_info(stage_id)
+        manifest = info["stage"]["manifest_digest"]
+        status, body, _ = request(stage_url + "/promote", token=PROMOTE, data={"manifest_digest":"0" * 64})
+        assert status == 409, (status, body)
+        deadline = time.monotonic() + 120
+        while True:
+            status, body, _ = request(stage_url + "/promote", token=PROMOTE, data={"manifest_digest":manifest})
+            if status == 200:
+                break
+            assert status == 409 and json.loads(body)["error"] == "release_not_approved", (status, body)
+            if time.monotonic() > deadline:
+                raise AssertionError(("hosted approval timed out", stage_info(stage_id)))
+            time.sleep(0.25)
+        file_proof = []
+        for item in stage_info(stage_id)["files"]:
+            status, content, _ = request(HOSTED_PUBLIC + item["path"])
+            assert status == 200 and hashlib.sha256(content).hexdigest() == item["artifact"]["digest"], (status, content)
+            if item["path"].endswith(".jar"):
+                assert content == Path("/fixtures/java/library.jar").read_bytes()
+            for algorithm in ["md5", "sha1", "sha256", "sha512"]:
+                status, digest, _ = request(HOSTED_PUBLIC + item["path"] + "." + algorithm)
+                assert status == 200 and digest.decode().strip() == hashlib.new(algorithm, content).hexdigest(), (status, digest)
+            file_proof.append({"path":item["path"], "sha256":hashlib.sha256(content).hexdigest()})
+        status, metadata, _ = request(HOSTED_PUBLIC + HOSTED_ROOT + "/maven-metadata.xml")
+        assert status == 200 and b"<version>1.0.0</version>" in metadata and b"SNAPSHOT" not in metadata, (status, metadata)
+        status, digest, _ = request(HOSTED_PUBLIC + HOSTED_ROOT + "/maven-metadata.xml.sha256")
+        assert status == 200 and digest.decode().strip() == hashlib.sha256(metadata).hexdigest(), (status, digest)
+        status, body, _ = request("/r/maven/" + HOSTED_PREFIX + ".jar")
+        assert status == 403, (status, body)
+        status, body, _ = request("/r/maven/dev/packweir/private/missing/1.0/missing-1.0.jar")
+        assert status == 403, (status, body)
+        wrapped = base64.urlsafe_b64encode(("http://upstream:8081/maven/" + HOSTED_PREFIX + ".jar").encode()).decode().rstrip("=")
+        status, body, _ = request("/r/maven/_fetch/" + wrapped)
+        assert status == 403, (status, body)
+        status, body, _ = request("/r/maven/dev/packweir/privatex/missing/1.0/missing-1.0.jar")
+        assert status == 404, (status, body)
+        status, body, _ = request(stage_url + "/" + HOSTED_PREFIX + ".jar", token=PUBLISH, data=b"replace published bytes", method="PUT")
+        assert status == 409, (status, body)
+        proof = {"stage_id":stage_id, "manifest_digest":manifest, "coordinate":"dev.packweir.private:hosted-fixture:1.0.0", "files":file_proof,
+                 "quarantine":"passed", "pending_promotion":"passed", "role_separation":"passed", "checksum_algorithms":["md5","sha1","sha256","sha512"],
+                 "namespace_reservation":"passed", "immutable_uploads":"passed", "snapshots":"explicitly_rejected"}
+        print("PACKWEIR_HOSTED_PROOF=" + json.dumps(proof, separators=(",", ":")), flush=True)
+    elif phase == "hosted-revoke":
+        manifest = stage_info(stage_id)["stage"]["manifest_digest"]
+        status, body, _ = request(stage_url + "/revoke", token=PUBLISH, data={"manifest_digest":manifest})
+        assert status == 403, (status, body)
+        status, body, _ = request(stage_url + "/revoke", token=PROMOTE, data={"manifest_digest":manifest})
+        assert status == 200, (status, body)
+        assert_hosted_hidden()
+        events = [json.loads(line) for line in Path("/fixtures/requests.jsonl").read_text().splitlines()]
+        assert not any(event["path"].startswith("/maven/dev/packweir/private/") for event in events), events
+    else:
+        raise AssertionError("unknown hosted phase")
+    print(f"probe {phase}: passed", flush=True)
+
+
 def main():
     phase = sys.argv[1]
+    if phase.startswith("hosted-"):
+        hosted(phase, sys.argv[2])
+        return
     catalog = json.loads(Path("/fixtures/catalog.json").read_text())
     first = catalog[0]
     if phase == "pending":

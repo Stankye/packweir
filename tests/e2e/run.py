@@ -26,6 +26,12 @@ def configuration(storage):
         '[policy]\nrevision="local-client-fixtures"\nrequired=["inventory","archive_safety"]',
         '[[policy_scopes]]\nname="fixture-npm-scope"\nrepository="npm"\nnamespace="@packweir"\n'
         '[policy_scopes.policy]\nrevision="fixture-scope-v1"\nrequired=["archive_safety"]',
+        '[repositories.maven-local]\nkind="hosted"\necosystem="maven"\nretain=true',
+        '[access.principals.publisher]\ntoken_env="PACKWEIR_PUBLISH_TOKEN"\n'
+        '[[access.principals.publisher.grants]]\nrepository="maven-local"\nactions=["write"]\nnamespace="dev.packweir.private"',
+        '[access.principals.promoter]\ntoken_env="PACKWEIR_PROMOTE_TOKEN"\n'
+        '[[access.principals.promoter.grants]]\nrepository="maven-local"\nactions=["promote"]\nnamespace="dev.packweir.private"',
+        '[[access.maven_owners]]\nnamespace="dev.packweir.private"\nrepository="maven-local"',
     ]
     for name in ["npm", "pypi", "cargo", "maven", "nuget"]:
         suffix = "simple/" if name == "pypi" else ""
@@ -98,11 +104,30 @@ def main():
                 compose("build","gateway",log_name="build.log",timeout=1200)
             compose("up","-d","--wait","--wait-timeout","180","gateway","image-defaults",timeout=300)
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","pending")
+            stage_id = str(uuid.uuid4())
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-create",stage_id,log_name="hosted-create.log")
+            publication_log = compose("run","--rm","--no-deps","--env",f"PACKWEIR_STAGE_ID={stage_id}","hosted-publish",log_name="hosted-publish.log")
+            publication_version = re.search(r"PACKWEIR_CLIENT_VERSION_BEGIN\s*(.*?)\s*PACKWEIR_CLIENT_VERSION_END", publication_log, re.S)
+            if not publication_version:
+                raise RuntimeError("Hosted publisher did not report its native Gradle version")
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-seal",stage_id,log_name="hosted-seal.log")
             # Some Compose versions reject --wait on a health-disabled service.
             # The prefetch probe below verifies actual worker progress with a deadline.
             compose("up","-d","--no-deps","worker")
             staged = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","prefetch")
             explain_digest = re.search(r"explain_digest=([0-9a-f]{64})", staged).group(1)
+            hosted_log = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-promote",stage_id,log_name="hosted-promote.log")
+            hosted_proof = json.loads(re.search(r"PACKWEIR_HOSTED_PROOF=(.+)", hosted_log).group(1))
+            hosted_proof["publisher"] = {"client":"gradle-maven-publish", "version_output":publication_version.group(1), "log":"hosted-publish.log"}
+            hosted_status_log = compose("exec","-T","--env","PACKWEIR_SERVICE_TOKEN=fixture-promote-token-000000000000000","gateway","packweir","--config","/app/e2e.toml","hosted","status",stage_id,log_name="hosted-status.log")
+            hosted_status = json.loads(hosted_status_log)
+            if hosted_status["stage"]["id"] != stage_id or hosted_status["stage"]["state"] != "published" or hosted_status["stage"]["manifest_digest"] != hosted_proof["manifest_digest"]:
+                raise RuntimeError("Hosted CLI status did not return the promoted manifest")
+            promotion = hosted_status["promotion"]
+            expected_files = {item["path"]:item["sha256"] for item in hosted_proof["files"]}
+            if promotion["manifest_digest"] != hosted_proof["manifest_digest"] or promotion["actor"] != "promoter" or {item["path"]:item["subject"] for item in promotion["files"]} != expected_files or any(not item["evidence"] or len(item["configuration"]) != 64 for item in promotion["files"]):
+                raise RuntimeError("Hosted CLI status did not preserve the promotion evidence receipt")
+            hosted_proof["cli_status"] = "passed"
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","explain",explain_digest,"--repository","npm",log_name="explain.log")
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","status",log_name="operations.log")
             clients = {}
@@ -114,6 +139,9 @@ def main():
                 clients[name] = {"status":"passed", "version_output":version.group(1), "log":f"{name}.log"}
                 print(f"{storage}: {name} passed", flush=True)
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","verify")
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-revoke",stage_id,log_name="hosted-revoke.log")
+            hosted_proof["revocation"] = "passed"
+            (output/"hosted-report.json").write_text(json.dumps(hosted_proof,indent=2))
             compose("stop","upstream")
             compose("run","--rm","--no-deps","storage-check")
             compose("stop","object-store" if storage == "s3" else "postgres")
@@ -123,7 +151,7 @@ def main():
             images = [{key: item[key] for key in ["Id","RepoTags","RepoDigests","Architecture","Os"]} for item in json.loads(inspected)]
             results.append({"storage":storage,"clients":clients,"pending_gate":"passed","denied_gate":"passed",
                             "offline_cache":"passed","retained_blob_tampering":"passed","dependency_outage":"passed",
-                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","images":images,
+                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","hosted_maven":hosted_proof,"images":images,
                             "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()})
             (output/"report.json").write_text(json.dumps(results[-1],indent=2))
             print(f"{storage}: policy gates, offline cache, and tamper rejection passed; report: {output / 'report.json'}", flush=True)

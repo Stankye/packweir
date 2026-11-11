@@ -10,16 +10,28 @@ repositories {
         allowInsecureProtocol = true
         credentials { username = 'fixture'; password = System.getenv('PACKWEIR_READ_TOKEN') }
         authentication { basic(BasicAuthentication) }
+        content { excludeGroup 'dev.packweir.private' }
+    }
+    maven {
+        url = uri('http://gateway:8080/r/maven-local/')
+        allowInsecureProtocol = true
+        credentials { username = 'fixture'; password = System.getenv('PACKWEIR_READ_TOKEN') }
+        authentication { basic(BasicAuthentication) }
+        content { includeGroup 'dev.packweir.private' }
     }
 }
-configurations { fixture }
+configurations { fixture; hosted }
 dependencies { fixture 'dev.packweir:fixture:1.0.0' }
+dependencies { hosted 'dev.packweir.private:hosted-fixture:1.0.0' }
 tasks.register('checkFixture') {
     doLast {
         def artifact = configurations.fixture.singleFile
         def jar = new java.util.jar.JarFile(artifact)
         try { assert jar.getInputStream(jar.getJarEntry('fixture.txt')).getText('UTF-8') == 'packweir fixture\n' }
         finally { jar.close() }
+        def hostedJar = new java.util.jar.JarFile(configurations.hosted.singleFile)
+        try { assert hostedJar.getInputStream(hostedJar.getJarEntry('fixture.txt')).getText('UTF-8') == 'packweir fixture\n' }
+        finally { hostedJar.close() }
     }
 }
 EOF

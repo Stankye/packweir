@@ -47,10 +47,12 @@ Each client starts in a disposable container with an empty download cache. Artif
 | pip / Python | pip 26.2.2 / Python 3.13.18 | Basic authentication, HTML simple index, visible wheel filename, SHA-256 `--require-hashes`, wheel installation and import |
 | Cargo | 1.99.1 | Authenticated sparse registry, `cargo:token`, checksum-bound crate download, compilation and execution of a fixture dependent |
 | Maven / Java | Maven 3.9.16 / Temurin 21.0.12.1 | Basic authentication, mirror configuration, custom plugin resolution, dependency/POM/JAR and checksum retrieval |
-| Gradle | 8.14.6 / JDK 21 | Basic authentication, Maven repository dependency resolution and JAR content verification |
+| Gradle | 8.14 release line / JDK 21; exact version in each report | Basic authentication, native Maven publication, dependency resolution, and JAR content verification |
 | NuGet / .NET | SDK 10.0.403 | Basic authentication, V3 service index and flat-container discovery, package restore; NuGet audit disabled |
 
 These versions are observations from local qualification. Client images track the specified release lines. Each successful report records the actual version output, image IDs, registry digests where present, platform, and completion time; CI publishes these with logs as `container-client-qualification`. The locally built application image has an image ID but no registry digest.
+
+Both storage modes qualify staged immutable Maven publication with real Gradle `maven-publish`, separate publisher/promoter credentials, no quarantined downloads, per-file checksums, reserved-group routing, Maven/Gradle consumption, and terminal revocation. The report records the manifest, file digests, and publisher version; see [hosted releases](hosted.md) for the supported POM and lifecycle boundaries. This does not qualify `mvn deploy` or snapshot publication.
 
 Both storage modes also assert:
 
@@ -67,6 +69,6 @@ Rewritten file links include their original filename for clients such as pip. Th
 
 ## Remaining qualification
 
-This is a controlled core-flow matrix, not exhaustive protocol or production assurance. It does not cover public-registry availability, publishing, transitive dependency graphs at scale, every client/version, uv, Maven snapshots, NuGet search/audit/signature policy, conditional requests, multiple ranges, host TLS/reverse-proxy setup, multi-replica behavior, storage lifecycle/garbage collection, or large-artifact performance. First-request retry behavior still needs client-specific handling: approval can take longer than native retry budgets.
+This is a controlled core-flow matrix, not exhaustive protocol or production assurance. It does not cover public-registry availability, publishing outside the qualified immutable Maven/Gradle flow, transitive dependency graphs at scale, every client/version, uv, Maven snapshots, NuGet search/audit/signature policy, conditional requests, multiple ranges, host TLS/reverse-proxy setup, multi-replica behavior, storage lifecycle/garbage collection, or large-artifact performance. First-request retry behavior still needs client-specific handling: approval can take longer than native retry budgets.
 
 The matrix's required policy is inventory plus archive safety. Signature/provenance/vulnerability/source checks have separate Rust integration and real-tool qualification jobs; those integrations are not silently enabled by passing the container matrix. See [native drivers](native-drivers.md), [integration catalog](integrations.md), and [compatibility](compatibility.md) for the remaining boundaries.

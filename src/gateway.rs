@@ -1,6 +1,7 @@
 pub use crate::bounds::parse_range;
 use crate::{
-    config::{Config, Repository},
+    access::{AccessControl, Action, Principal},
+    config::{Config, Repository, RepositoryKind},
     explain, identity, inventory,
     model::{Artifact, Decision, Ecosystem, sha256},
     network, registry,
@@ -11,7 +12,7 @@ use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, OriginalUri, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, OriginalUri, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -32,8 +33,9 @@ pub struct AppState {
     pub blobs: BlobStore,
     pub admin_token: Arc<String>,
     pub read_token: Arc<String>,
+    pub access: Arc<AccessControl>,
     locks: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
-    downloads: Arc<Semaphore>,
+    pub(crate) downloads: Arc<Semaphore>,
 }
 impl AppState {
     pub fn new(
@@ -43,12 +45,42 @@ impl AppState {
         admin_token: String,
         read_token: String,
     ) -> Self {
+        Self::try_new(config, store, blobs, admin_token, read_token)
+            .expect("gateway credentials must be valid")
+    }
+    pub fn try_new(
+        config: Arc<Config>,
+        store: Store,
+        blobs: BlobStore,
+        admin_token: String,
+        read_token: String,
+    ) -> Result<Self> {
+        let access = AccessControl::load(&config, &admin_token, &read_token)?;
+        Ok(Self::with_access(
+            config,
+            store,
+            blobs,
+            admin_token,
+            read_token,
+            access,
+        ))
+    }
+    /// Construct from credentials already resolved by `AccessControl::load` or `from_tokens`.
+    pub fn with_access(
+        config: Arc<Config>,
+        store: Store,
+        blobs: BlobStore,
+        admin_token: String,
+        read_token: String,
+        access: AccessControl,
+    ) -> Self {
         Self {
             config,
             store,
             blobs,
             admin_token: Arc::new(admin_token),
             read_token: Arc::new(read_token),
+            access: Arc::new(access),
             locks: Default::default(),
             downloads: Arc::new(Semaphore::new(8)),
         }
@@ -84,6 +116,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/ready", get(ready))
         .merge(admin)
+        .merge(crate::hosted_http::router(state.clone()))
         .merge(packages)
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
@@ -170,17 +203,18 @@ async fn admin_auth(
 }
 async fn read_auth(
     State(state): State<AppState>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if !read_authorized(request.headers(), &state.read_token) {
+    let Some(principal) = state.access.authenticate(request.headers()) else {
         let mut response = StatusCode::UNAUTHORIZED.into_response();
         response.headers_mut().insert(
             header::WWW_AUTHENTICATE,
             "Basic realm=\"Packweir\"".parse().expect("static header"),
         );
         return response;
-    }
+    };
+    request.extensions_mut().insert(principal);
     next.run(request).await
 }
 
@@ -226,26 +260,48 @@ fn internal(error: anyhow::Error) -> Response {
 }
 async fn root(
     State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
     Path(name): Path<String>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
-    proxy_inner(&state, &name, "", &uri, &headers)
+    if !package_access(&state, &principal, &name, "") {
+        return failure(StatusCode::FORBIDDEN, "repository_access_denied");
+    }
+    proxy_inner(&state, &name, "", &uri, &headers, Some(&principal))
         .await
         .unwrap_or_else(internal)
 }
 async fn proxy(
     State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
     Path((name, path)): Path<(String, String)>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
-    proxy_inner(&state, &name, &path, &uri, &headers)
+    if !package_access(&state, &principal, &name, &path) {
+        return failure(StatusCode::FORBIDDEN, "repository_access_denied");
+    }
+    proxy_inner(&state, &name, &path, &uri, &headers, Some(&principal))
         .await
         .unwrap_or_else(internal)
 }
 
-async fn target(state: &AppState, name: &str, path: &str, query: Option<&str>) -> Result<Url> {
+fn package_access(state: &AppState, principal: &Principal, name: &str, path: &str) -> bool {
+    state
+        .config
+        .repositories
+        .get(name)
+        .is_some_and(|repo| principal.allows_path(name, repo, Action::Read, path))
+}
+
+async fn target(
+    state: &AppState,
+    name: &str,
+    path: &str,
+    query: Option<&str>,
+    principal: Option<&Principal>,
+) -> Result<Url> {
     let repo = state
         .config
         .repositories
@@ -267,12 +323,17 @@ async fn target(state: &AppState, name: &str, path: &str, query: Option<&str>) -
                 .all(|b| b.is_ascii_alphanumeric() || b".-+_".contains(&b)),
             "invalid crate version"
         );
-        let index = network::fetch(
+        let index = network::fetch_guarded(
             repo,
-            &repo.upstream.join(&index_path)?,
+            &repo.proxy_upstream()?.join(&index_path)?,
             None,
             8 * 1024 * 1024,
             state.config.allow_private_upstreams,
+            &network::FetchGuard {
+                access: &state.config.access,
+                repository: name,
+                principal,
+            },
         )
         .await?;
         ensure!(index.status == 200, "crate index unavailable");
@@ -298,7 +359,7 @@ async fn target(state: &AppState, name: &str, path: &str, query: Option<&str>) -
             !path.starts_with('/') && !path.contains('\\') && !path.split('/').any(|p| p == ".."),
             "invalid registry path"
         );
-        repo.upstream.join(path)?
+        repo.proxy_upstream()?.join(path)?
     };
     if let Some(query) = query {
         let joined = match url.query() {
@@ -317,15 +378,41 @@ async fn proxy_inner(
     path: &str,
     uri: &axum::http::Uri,
     headers: &HeaderMap,
+    principal: Option<&Principal>,
 ) -> Result<Response> {
     let Some(repo) = state.config.repositories.get(name) else {
         return Ok(failure(StatusCode::NOT_FOUND, "repository_not_found"));
     };
+    if !state.config.access.maven_path_allowed(name, repo, path) {
+        return Ok(failure(StatusCode::FORBIDDEN, "namespace_owned_elsewhere"));
+    }
+    if repo.kind == RepositoryKind::Hosted {
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::hosted_http::download(state, name, path, uri, headers),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Ok(failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "release_unavailable",
+            )),
+        };
+    }
     let _permit = state.downloads.acquire().await?;
     if repo.ecosystem == Ecosystem::Cargo && path == "config.json" {
         return Ok(Json(json!({"dl":format!("{}r/{name}/_cargo/{{crate}}/{{version}}/download",state.config.public_url),"auth-required":true})).into_response());
     }
-    let url = target(state, name, path, uri.query()).await?;
+    let url = target(state, name, path, uri.query(), principal).await?;
+    // Apply URL-level guards before retained-byte lookup too. Older cache entries can
+    // predate a namespace reservation or contain an ambiguous query/CDN route.
+    if !state.config.access.maven_url_allowed(name, repo, &url) {
+        return Ok(failure(StatusCode::FORBIDDEN, "namespace_owned_elsewhere"));
+    }
+    if principal.is_some_and(|p| !p.allows_url(name, repo, Action::Read, &url)) {
+        return Ok(failure(StatusCode::FORBIDDEN, "repository_access_denied"));
+    }
     let lock = state.lock(&format!("{name}:{url}")).await;
     let _guard = lock.lock().await;
     // A configured Cargo download template need not end in .crate or /download.
@@ -351,12 +438,17 @@ async fn proxy_inner(
         return gate(state, repo, artifact, bytes, headers).await;
     }
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
-    let download = network::fetch(
+    let download = network::fetch_guarded(
         repo,
         &url,
         accept,
         state.config.max_download_bytes,
         state.config.allow_private_upstreams,
+        &network::FetchGuard {
+            access: &state.config.access,
+            repository: name,
+            principal,
+        },
     )
     .await?;
     if download.status != 200 {
@@ -524,7 +616,7 @@ async fn gate(
                     .filter(|(_, r)| r.retain)
                     .map(|(n, _)| n.clone())
                     .collect();
-                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running'))")
+                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running')) OR EXISTS(SELECT 1 FROM hosted_files WHERE digest=$1)")
                     .bind(&artifact.digest).bind(&retained).fetch_one(&state.store.pool).await?;
                 if !referenced {
                     state.blobs.delete(&artifact.digest).await?;
@@ -590,7 +682,7 @@ pub fn response(
 async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
-        "status":"experimental", "hosted_publishing":false,"oci_serving":false,
+        "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases"],"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
@@ -820,6 +912,7 @@ async fn prefetch(State(state): State<AppState>, Json(input): Json<Prefetch>) ->
         &input.path,
         &uri,
         &HeaderMap::new(),
+        None,
     )
     .await
     {

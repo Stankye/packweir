@@ -334,8 +334,14 @@ fn pypi_html_does_not_forward_scripts_or_metadata_bypass() {
     let config = Config::load(std::path::Path::new("packweir.toml")).unwrap();
     let repo = &config.repositories["pypi"];
     let html = "<script>evil()</script><a href=\"https://files.pythonhosted.org/a.whl#sha256=abc\" data-requires-python=\"&gt;=3.10\" data-core-metadata=\"true\">a.whl</a>";
-    let output =
-        registry::rewrite_html(html, &repo.upstream, repo, "pypi", &config.public_url).unwrap();
+    let output = registry::rewrite_html(
+        html,
+        repo.proxy_upstream().unwrap(),
+        repo,
+        "pypi",
+        &config.public_url,
+    )
+    .unwrap();
     assert!(!output.contains("evil"));
     assert!(!output.contains("data-core-metadata"));
     assert!(output.contains("data-requires-python"));
@@ -472,7 +478,7 @@ fn configuration_rejects_unbounded_timeouts_and_embedded_credentials() {
     assert!(config.validate().is_err());
     let mut config = original.clone();
     config.repositories.get_mut("npm").unwrap().upstream =
-        "https://registry.npmjs.org/?token=secret".parse().unwrap();
+        Some("https://registry.npmjs.org/?token=secret".parse().unwrap());
     assert!(config.validate().is_err());
     assert!(original.validate().is_ok());
 }
@@ -521,10 +527,10 @@ async fn redirects_cannot_escape_the_configured_upstream_path() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let config = Config::load(std::path::Path::new("packweir.toml")).unwrap();
     let mut repo = config.repositories["npm"].clone();
-    repo.upstream = origin.parse().unwrap();
+    repo.upstream = Some(origin.parse().unwrap());
     let result = network::fetch(
         &repo,
-        &repo.upstream.join("package.tgz").unwrap(),
+        &repo.proxy_upstream().unwrap().join("package.tgz").unwrap(),
         None,
         1024,
         true,

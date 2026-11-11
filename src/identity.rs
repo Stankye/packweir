@@ -19,7 +19,12 @@ impl PackageIdentity {
         let Some(mut expected) = package(self.ecosystem, &self.name, &self.version) else {
             return false;
         };
-        if !["registry_path_observed", "registry_metadata_observed"].contains(&self.basis.as_str())
+        if ![
+            "registry_path_observed",
+            "registry_metadata_observed",
+            "hosted_coordinates_declared",
+        ]
+        .contains(&self.basis.as_str())
         {
             return false;
         }
@@ -62,14 +67,12 @@ pub fn json_claims(
     value: &serde_json::Value,
 ) -> anyhow::Result<Vec<IdentityClaim>> {
     use anyhow::{Context, ensure};
-    if source.origin() != repo.upstream.origin() {
+    let upstream = repo.proxy_upstream()?;
+    if source.origin() != upstream.origin() {
         return Ok(vec![]);
     }
     let relative = percent_encoding::percent_decode_str(
-        source
-            .path()
-            .strip_prefix(repo.upstream.path())
-            .unwrap_or(""),
+        source.path().strip_prefix(upstream.path()).unwrap_or(""),
     )
     .decode_utf8()?
     .trim_matches('/')
@@ -193,12 +196,13 @@ pub fn html_claims(
     html: &str,
 ) -> anyhow::Result<Vec<IdentityClaim>> {
     use lol_html::{RewriteStrSettings, element, rewrite_str};
-    if source.origin() != repo.upstream.origin() {
+    let upstream = repo.proxy_upstream()?;
+    if source.origin() != upstream.origin() {
         return Ok(vec![]);
     }
     let relative = source
         .path()
-        .strip_prefix(repo.upstream.path())
+        .strip_prefix(upstream.path())
         .unwrap_or("")
         .trim_matches('/');
     let Some(name) = pypi_project(relative) else {
@@ -312,6 +316,14 @@ fn encode(value: &str) -> String {
     encoded
 }
 
+pub fn from_coordinates(
+    ecosystem: Ecosystem,
+    name: &str,
+    version: &str,
+) -> Option<PackageIdentity> {
+    package(ecosystem, name, version)
+}
+
 fn package(ecosystem: Ecosystem, name: &str, version: &str) -> Option<PackageIdentity> {
     let name = canonical_name(ecosystem, name)?;
     if version.is_empty()
@@ -402,10 +414,11 @@ pub fn observe(repo: &Repository, url: &Url, route: &str) -> Option<PackageIdent
             package(repo.ecosystem, name, version)
         }
         Ecosystem::Maven => {
-            if url.origin() != repo.upstream.origin() {
+            let upstream = repo.proxy_upstream().ok()?;
+            if url.origin() != upstream.origin() {
                 return None;
             }
-            let relative = url.path().strip_prefix(repo.upstream.path())?;
+            let relative = url.path().strip_prefix(upstream.path())?;
             let parts: Vec<_> = relative.split('/').collect();
             if parts.len() < 4 {
                 return None;
