@@ -36,7 +36,9 @@ fn verifier(directory: &Path) -> CommandScanner {
         program: fixture_program().to_string_lossy().into_owned(),
         args: vec![],
         version: "test-fixture".into(),
-        timeout_seconds: 2,
+        // The two-bundle success case includes filesystem/process startup on Windows.
+        // Timeout enforcement has a separate test with its own one-second budget.
+        timeout_seconds: 10,
         environment: BTreeMap::new(),
         program_sha256: Some(sha256(&std::fs::read(fixture_program()).unwrap())),
         resources: BTreeMap::from([(
