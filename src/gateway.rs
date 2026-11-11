@@ -68,6 +68,8 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let admin = Router::new()
         .route("/api/v1/capabilities", get(capabilities))
+        .route("/api/v1/operations", get(operations))
+        .route("/metrics", get(metrics))
         .route("/api/v1/artifacts/{digest}", get(inspect))
         .route("/api/v1/artifacts/{digest}/documents", post(ingest))
         .route("/api/v1/artifacts/{digest}/documents/{blob}", get(document))
@@ -105,6 +107,40 @@ async fn ready(State(state): State<AppState>) -> Response {
             Json(json!({"ready":false})),
         )
             .into_response()
+    }
+}
+
+async fn operations(State(state): State<AppState>) -> Response {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::operations::snapshot(&state.store),
+    )
+    .await
+    {
+        Ok(Ok(snapshot)) => Json(snapshot).into_response(),
+        _ => failure(StatusCode::SERVICE_UNAVAILABLE, "operations_unavailable"),
+    }
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::operations::snapshot(&state.store),
+    )
+    .await
+    {
+        Ok(Ok(snapshot)) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    "text/plain; version=0.0.4; charset=utf-8",
+                ),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            snapshot.render_prometheus(),
+        )
+            .into_response(),
+        _ => failure(StatusCode::SERVICE_UNAVAILABLE, "operations_unavailable"),
     }
 }
 
@@ -297,6 +333,7 @@ async fn proxy_inner(
     if !metadata
         && repo.retain
         && let Some(mut artifact) = state.store.artifact(name, url.as_str()).await?
+        && retained_artifact_is_fresh(state, repo, &artifact).await?
         && let Ok(bytes) = state.blobs.read(&artifact.digest).await
     {
         // The URL fragment is part of the origin mapping and is verified on each delivery.
@@ -377,7 +414,39 @@ async fn proxy_inner(
         package: identity::observe(repo, &url, path),
     };
     let artifact = state.store.register(&artifact).await?;
+    // Only a complete, successfully verified upstream response advances freshness.
+    // Analysis, cached reads, and registry identity updates do not extend this timestamp.
+    state
+        .store
+        .mark_artifact_validated(&artifact.repository, &artifact.origin, &artifact.digest)
+        .await?;
     gate(state, repo, artifact, bytes, headers).await
+}
+
+async fn retained_artifact_is_fresh(
+    state: &AppState,
+    repo: &Repository,
+    artifact: &Artifact,
+) -> Result<bool> {
+    let Some(max_age) = repo.cache_max_age_seconds else {
+        return Ok(true);
+    };
+    let Some(validated) = state
+        .store
+        .artifact_last_validated(&artifact.repository, &artifact.origin, &artifact.digest)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let Ok(max_age) = i64::try_from(max_age) else {
+        return Ok(false);
+    };
+    let Some(max_age) = chrono::Duration::try_seconds(max_age) else {
+        return Ok(false);
+    };
+    let age = Utc::now().signed_duration_since(validated);
+    // Clock rollback cannot make a retained mapping fresh indefinitely.
+    Ok(age >= chrono::Duration::zero() && age < max_age)
 }
 
 async fn rewrite_metadata(
@@ -524,7 +593,8 @@ async fn capabilities() -> Json<Value> {
         "status":"experimental", "hosted_publishing":false,"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
-        "vulnerabilities":"osv_driver_requires_package_mappings_and_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
+        "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
+        "licenses":"scancode_driver_requires_pinned_tool_and_explicit_spdx_policy",
         "sigstore_blob_signature":"cosign_driver_requires_pinned_executable_and_trust_root"},
         "sbom":{"formats":["SPDX-2.3","CycloneDX-1.6"],"validation":"envelope_only"}}),
     )

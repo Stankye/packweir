@@ -12,6 +12,142 @@ use std::{
     io::Cursor,
 };
 
+pub(crate) fn supported_literal_version(ecosystem: crate::model::Ecosystem, version: &str) -> bool {
+    use crate::model::Ecosystem;
+    match ecosystem {
+        Ecosystem::Npm | Ecosystem::Cargo => semver::Version::parse(version).is_ok(),
+        Ecosystem::Pypi => version.parse::<pep440_rs::Version>().is_ok(),
+        Ecosystem::Nuget => {
+            // NuGet accepts omitted minor/patch components and leading zeroes.
+            // Validate those spellings as a concrete three-part SemVer without
+            // changing the version sent to OSV or weakening exact output coverage.
+            // Four-part NuGet revisions require a separately qualified matcher.
+            let suffix_start = version.find(['-', '+']).unwrap_or(version.len());
+            let (core, suffix) = version.split_at(suffix_start);
+            let parts: Vec<_> = core.split('.').collect();
+            if !(1..=3).contains(&parts.len()) {
+                return false;
+            }
+            let Some(mut numbers) = parts
+                .into_iter()
+                .map(|part| {
+                    (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+                        .then(|| part.parse::<u32>().ok())
+                        .flatten()
+                        .filter(|part| *part <= i32::MAX as u32)
+                        .map(|part| part.to_string())
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            numbers.resize(3, "0".into());
+            semver::Version::parse(&format!("{}{suffix}", numbers.join("."))).is_ok()
+        }
+        Ecosystem::Maven => {
+            // Maven has arbitrary literal qualifiers, including .Final and
+            // -SNAPSHOT. Support numeric or v-prefixed numeric release names,
+            // while holding unqualified tags and obvious wildcard spellings.
+            // This does not claim universal custom Maven version coverage.
+            let core = version.strip_prefix('v').unwrap_or(version);
+            core.bytes().next().is_some_and(|b| b.is_ascii_digit())
+                && core
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+                && !core
+                    .split(['.', '-', '_', '+'])
+                    .any(|part| part.is_empty() || part.eq_ignore_ascii_case("x"))
+        }
+    }
+}
+
+fn observed_bindings(bundle: &Value) -> Option<Vec<PackageBinding>> {
+    let identities = bundle.get("identities")?.as_array()?;
+    if identities.is_empty() || identities.len() > 32 {
+        return None;
+    }
+    let mut bindings = Vec::new();
+    let mut aliases = BTreeSet::new();
+    for identity in identities {
+        let scope: crate::identity::DeliveryScope =
+            serde_json::from_value(identity.clone()).ok()?;
+        if !aliases.insert((scope.repository.clone(), scope.origin.clone())) {
+            return None;
+        }
+        let package = scope.package?;
+        if !package.is_canonical()
+            || !supported_literal_version(package.ecosystem, &package.version)
+        {
+            return None;
+        }
+        if matches!(
+            package.ecosystem,
+            crate::model::Ecosystem::Npm | crate::model::Ecosystem::Pypi
+        ) && package.basis != "registry_metadata_observed"
+        {
+            return None;
+        }
+        let origin = url::Url::parse(&scope.origin).ok()?;
+        if !matches!(origin.scheme(), "https" | "http")
+            || origin.host_str().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.as_str() != scope.origin
+        {
+            return None;
+        }
+        if scope.repository.is_empty()
+            || !scope
+                .repository
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return None;
+        }
+        let ecosystem = match package.ecosystem {
+            crate::model::Ecosystem::Npm => "npm",
+            crate::model::Ecosystem::Pypi => "PyPI",
+            crate::model::Ecosystem::Cargo => "crates.io",
+            crate::model::Ecosystem::Maven => "Maven",
+            crate::model::Ecosystem::Nuget => "NuGet",
+        };
+        bindings.push(PackageBinding {
+            repository: scope.repository,
+            origin: scope.origin,
+            ecosystem: ecosystem.into(),
+            name: package.name,
+            version: package.version,
+        });
+    }
+    Some(bindings)
+}
+
+pub(super) async fn run_observed(
+    execution: &mut Execution<'_>,
+    bundle: &Value,
+    databases: &BTreeMap<String, OsvDatabase>,
+) -> Result<ScannerOutput> {
+    let Some(packages) = observed_bindings(bundle) else {
+        return Ok(execution.result(Outcome::Inconclusive,"observed_package_vulnerabilities",
+            "all delivery identities need canonical coordinates and a supported literal version; npm and PyPI require discovery binding"));
+    };
+    if packages
+        .iter()
+        .any(|p| !databases.contains_key(&p.ecosystem))
+    {
+        return Ok(execution.result(
+            Outcome::Inconclusive,
+            "observed_package_vulnerabilities",
+            "a required ecosystem database is unavailable",
+        ));
+    }
+    let mut result = run(execution, bundle, &packages, databases).await?;
+    result.details["verification_scope"] = json!("observed_package_vulnerabilities");
+    result.details["mapping_origin"] = json!("registry_observed");
+    result.details["publisher_identity_verified"] = json!(false);
+    Ok(result)
+}
+
 pub(super) async fn run(
     execution: &mut Execution<'_>,
     bundle: &Value,

@@ -23,6 +23,8 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - A bounded command-adapter protocol for external scanners, provenance verifiers, and future agents.
 - A Cosign-backed Sigstore blob-signature driver with exact signer/issuer policy and pinned executable/trust root; digest-pinned resource snapshots for custom adapters.
 - Built-in SLSA Verifier, offline OSV-Scanner, and Hipcheck drivers with explicit source/package mappings, preserved findings, plugin pins, and database-bound evidence expiry.
+- Opt-in OSV scanning from observed coordinates, per-repository mutable-artifact revalidation, and authenticated operational JSON/Prometheus snapshots.
+- A pinned ScanCode driver for bounded file-level license observations and explicit SPDX-expression policy, preserving unknown/conflicting coverage for review.
 
 The sample configuration requires inventory and archive-safety checks only. **This is a bootstrap policy, not malware detection or a provenance guarantee.** Configure trusted adapters and add their check names to `policy.required` before depending on those capabilities. Requiring an unavailable integration keeps the artifact pending.
 
@@ -74,6 +76,7 @@ The first artifact request stages bytes and returns `503` with a digest and `Ret
 cargo run -- prefetch npm 'example/-/example-1.0.0.tgz'
 cargo run -- inspect '<sha256-digest>'
 cargo run -- explain '<sha256-digest>' --repository npm
+cargo run -- status
 ```
 
 Prefetch exits unsuccessfully until approved. It uses the same route, storage, and policy path as clients; it does not bypass checks.
@@ -87,6 +90,7 @@ Every `/api/v1` request requires `Authorization: Bearer <admin-token>`.
 | Method | Path | Behavior |
 |---|---|---|
 | GET | `/api/v1/capabilities` | Experimental capability status |
+| GET | `/api/v1/operations` | Consistent queue, evidence, and recorded-storage metadata snapshot |
 | GET | `/api/v1/artifacts/{digest}` | Per-delivery decisions/explanations, evidence, and documents; optional `repository`/`origin` filters |
 | POST | `/api/v1/artifacts/{digest}/documents` | Preserve an external document, without asserting trust |
 | GET | `/api/v1/artifacts/{digest}/documents/{blob}` | Retrieve a document linked to this artifact |
@@ -120,6 +124,8 @@ python3 tests/e2e/run.py --storage both
 ```
 
 This matrix covers preapproved local fixtures, scoped npm packages, hash-locked wheels, Cargo credential providers, Maven plugin/dependency resolution, Gradle dependency resolution, and NuGet restore. It also checks pending/denied delivery, byte ranges, offline retained bytes, corrupted blobs, credential isolation, and dependency outages. Logs, client versions, and image identities are saved under `target/e2e/`. See [coverage and limitations](docs/containers.md) before applying these results to a deployment.
+
+See [license observations](docs/licenses.md) to configure ScanCode/SPDX policy and [operations](docs/operations.md) for cache freshness, `packweir status`, and authenticated `/metrics`. Run the real ScanCode qualification harness with `python3 tests/scancode/run.py`; it preserves the verified distribution digest and results under `target/scancode/`.
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 

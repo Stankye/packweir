@@ -66,6 +66,7 @@ pub struct Repository {
     pub token_env: Option<String>,
     pub cargo_download_template: Option<String>,
     pub policy: Option<crate::policy::PolicyRequirements>,
+    pub cache_max_age_seconds: Option<u64>,
 }
 fn yes() -> bool {
     true
@@ -116,6 +117,12 @@ pub enum ScannerDriver {
     Osv {
         packages: Vec<PackageBinding>,
         databases: BTreeMap<String, OsvDatabase>,
+    },
+    OsvObserved {
+        databases: BTreeMap<String, OsvDatabase>,
+    },
+    Scancode {
+        policy: crate::licenses::LicensePolicy,
     },
     Hipcheck {
         policy: String,
@@ -228,6 +235,30 @@ fn valid_digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+fn validate_osv_databases(databases: &BTreeMap<String, OsvDatabase>) -> Result<()> {
+    ensure!(
+        !databases.is_empty() && databases.len() <= 5,
+        "between one and five OSV ecosystem databases required"
+    );
+    for (ecosystem, database) in databases {
+        ensure!(
+            ["npm", "PyPI", "crates.io", "Maven", "NuGet"].contains(&ecosystem.as_str()),
+            "unsupported OSV database ecosystem"
+        );
+        ensure!(
+            Path::new(&database.path).is_absolute()
+                && valid_digest(&database.sha256)
+                && !database.revision.trim().is_empty(),
+            "OSV databases require absolute paths, SHA-256 pins and revisions"
+        );
+        ensure!(
+            database.expires_at > database.published_at,
+            "invalid OSV database validity interval"
+        );
+    }
+    Ok(())
+}
+
 impl CommandScanner {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -290,6 +321,24 @@ impl CommandScanner {
             );
         }
         match &self.driver {
+            ScannerDriver::Scancode { policy } => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "ScanCode driver controls its environment"
+                );
+                ensure!(
+                    self.version == crate::licenses::SCANCODE_VERSION,
+                    "ScanCode version needs separate qualification"
+                );
+                policy.validate()?;
+            }
+            ScannerDriver::OsvObserved { databases } => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "OSV driver controls its offline database environment"
+                );
+                validate_osv_databases(databases)?;
+            }
             ScannerDriver::Slsa {
                 builder_id,
                 sources,
@@ -351,6 +400,18 @@ impl CommandScanner {
                                 .all(|b| b.is_ascii_alphanumeric() || b"._-+!".contains(&b)),
                         "OSV mappings require literal versions, not ranges or tags"
                     );
+                    let ecosystem = match package.ecosystem.as_str() {
+                        "npm" => Ecosystem::Npm,
+                        "PyPI" => Ecosystem::Pypi,
+                        "crates.io" => Ecosystem::Cargo,
+                        "Maven" => Ecosystem::Maven,
+                        "NuGet" => Ecosystem::Nuget,
+                        _ => unreachable!("ecosystem checked above"),
+                    };
+                    ensure!(
+                        crate::drivers::osv::supported_literal_version(ecosystem, &package.version),
+                        "OSV mapping version is unsupported or is not an exact release"
+                    );
                     ensure!(
                         package.ecosystem != "Maven"
                             || package.name.split(':').count() == 2
@@ -362,27 +423,7 @@ impl CommandScanner {
                         "OSV requires a pinned database for each mapped ecosystem"
                     );
                 }
-                ensure!(
-                    databases.len() <= 5,
-                    "at most five OSV ecosystem databases supported"
-                );
-                for (ecosystem, database) in databases {
-                    ensure!(
-                        ["npm", "PyPI", "crates.io", "Maven", "NuGet"]
-                            .contains(&ecosystem.as_str()),
-                        "unsupported OSV database ecosystem"
-                    );
-                    ensure!(
-                        Path::new(&database.path).is_absolute()
-                            && valid_digest(&database.sha256)
-                            && !database.revision.trim().is_empty(),
-                        "OSV databases require absolute paths, SHA-256 pins and revisions"
-                    );
-                    ensure!(
-                        database.expires_at > database.published_at,
-                        "invalid OSV database validity interval"
-                    );
-                }
+                validate_osv_databases(databases)?;
             }
             ScannerDriver::Hipcheck {
                 policy,
@@ -605,6 +646,11 @@ impl Config {
             "at least one repository required"
         );
         for (name, repo) in &self.repositories {
+            ensure!(
+                repo.cache_max_age_seconds
+                    .is_none_or(|seconds| seconds <= 31_536_000),
+                "cache_max_age_seconds must be at most one year"
+            );
             if let Some(policy) = &repo.policy {
                 checks(&policy.revision, &policy.required, &policy.deny_on_failure)?;
                 ensure!(
@@ -665,7 +711,10 @@ impl Config {
             ensure!(
                 !matches!(
                     scanner.driver,
-                    ScannerDriver::Osv { .. } | ScannerDriver::Hipcheck { .. }
+                    ScannerDriver::Osv { .. }
+                        | ScannerDriver::OsvObserved { .. }
+                        | ScannerDriver::Hipcheck { .. }
+                        | ScannerDriver::Scancode { .. }
                 ) || !["agent", "provenance", "required_signature"].contains(&name.as_str()),
                 "analysis drivers cannot stand in for cryptographic verification or agents"
             );

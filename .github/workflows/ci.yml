@@ -3,6 +3,22 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  license_tool:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qualify pinned ScanCode against the real license driver
+        run: python3 tests/scancode/run.py
+      - name: Preserve real-tool qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scancode-qualification
+          path: |
+            target/scancode/**/*.log
+            target/scancode/**/*.json
+          if-no-files-found: warn
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 35

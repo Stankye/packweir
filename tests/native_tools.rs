@@ -2,7 +2,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
 use packweir::{
     config::{
-        CommandScanner, OsvDatabase, PackageBinding, PinnedResource, ScannerDriver, SourceBinding,
+        CommandScanner, Config, OsvDatabase, PackageBinding, PinnedResource, ScannerDriver,
+        SourceBinding,
     },
     model::{Outcome, sha256},
     scanner,
@@ -179,7 +180,7 @@ async fn real_osv_scans_pinned_offline_snapshots_and_distinguishes_fixed_version
             "PACKWEIR_TEST_OSV",
             "2.7.0",
             ScannerDriver::Osv {
-                packages,
+                packages: packages.clone(),
                 databases: databases.clone(),
             },
         );
@@ -189,6 +190,62 @@ async fn real_osv_scans_pinned_offline_snapshots_and_distinguishes_fixed_version
         assert_eq!(output.outcome, outcome, "{:?}", output.details);
         assert_eq!(output.valid_until, Some(expires_at));
         assert_eq!(output.details["packages"].as_array().unwrap().len(), 5);
+        // Exercise the opt-in automatic mapping path with the same real scanner/databases.
+        let config = Config::load(Path::new("packweir.toml")).unwrap();
+        let urls = [
+            format!("https://registry.npmjs.org/@packweir/fixture/-/fixture-{version}.tgz"),
+            format!("https://files.pythonhosted.org/packweir_fixture-{version}-py3-none-any.whl"),
+            "https://static.crates.io/fixture".into(),
+            format!(
+                "https://repo.maven.apache.org/maven2/dev/packweir/fixture/{version}/fixture-{version}.jar"
+            ),
+            format!(
+                "https://api.nuget.org/flat/packweir.fixture/{version}/packweir.fixture.{version}.nupkg"
+            ),
+        ];
+        let mut identities = Vec::new();
+        for (i, key) in ["npm", "pypi", "cargo", "maven", "nuget"]
+            .iter()
+            .enumerate()
+        {
+            let route = if *key == "cargo" {
+                format!("_cargo/packweir-fixture/{version}/download")
+            } else {
+                String::new()
+            };
+            let mut package = packweir::identity::observe(
+                &config.repositories[*key],
+                &urls[i].parse().unwrap(),
+                &route,
+            )
+            .unwrap();
+            if i < 2 {
+                package.basis = "registry_metadata_observed".into();
+            }
+            identities.push(json!(packweir::identity::DeliveryScope {
+                repository: (*key).into(),
+                origin: packages[i].origin.clone(),
+                filename: "fixture".into(),
+                package: Some(package)
+            }));
+        }
+        let observed_scanner = crate::scanner(
+            "PACKWEIR_TEST_OSV",
+            "2.7.0",
+            ScannerDriver::OsvObserved {
+                databases: databases.clone(),
+            },
+        );
+        let observed = scanner::run(
+            &observed_scanner,
+            &job(b"fixture"),
+            b"fixture",
+            &json!({"identities":identities}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(observed.outcome, outcome, "{:?}", observed.details);
+        assert_eq!(observed.details["mapping_origin"], "registry_observed");
     }
 }
 

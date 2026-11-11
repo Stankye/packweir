@@ -71,7 +71,7 @@ impl Store {
             .as_ref()
             .map(serde_json::to_value)
             .transpose()?;
-        sqlx::query("INSERT INTO artifacts(repository,origin,digest,size,filename,content_type,package) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(repository,origin) DO UPDATE SET digest=EXCLUDED.digest,size=EXCLUDED.size,filename=EXCLUDED.filename,content_type=EXCLUDED.content_type,package=EXCLUDED.package,updated_at=now()")
+        sqlx::query("INSERT INTO artifacts(repository,origin,digest,size,filename,content_type,package) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(repository,origin) DO UPDATE SET last_validated_at=CASE WHEN artifacts.digest=EXCLUDED.digest THEN artifacts.last_validated_at ELSE NULL END,digest=EXCLUDED.digest,size=EXCLUDED.size,filename=EXCLUDED.filename,content_type=EXCLUDED.content_type,package=EXCLUDED.package,updated_at=now()")
             .bind(&artifact.repository).bind(&artifact.origin).bind(&artifact.digest).bind(artifact.size).bind(&artifact.filename).bind(&artifact.content_type).bind(&package).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO contexts(subject) VALUES($1) ON CONFLICT DO NOTHING")
             .bind(&artifact.digest)
@@ -115,6 +115,26 @@ impl Store {
                 None
             },
         ))
+    }
+    pub async fn artifact_last_validated(
+        &self,
+        repository: &str,
+        origin: &str,
+        digest: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        Ok(sqlx::query_scalar::<_,Option<chrono::DateTime<chrono::Utc>>>("SELECT last_validated_at FROM artifacts WHERE repository=$1 AND origin=$2 AND digest=$3")
+            .bind(repository).bind(origin).bind(digest).fetch_optional(&self.pool).await?.flatten())
+    }
+    pub async fn mark_artifact_validated(
+        &self,
+        repository: &str,
+        origin: &str,
+        digest: &str,
+    ) -> Result<()> {
+        let changed=sqlx::query("UPDATE artifacts SET last_validated_at=now() WHERE repository=$1 AND origin=$2 AND digest=$3")
+            .bind(repository).bind(origin).bind(digest).execute(&self.pool).await?.rows_affected();
+        ensure!(changed == 1, "artifact changed during upstream validation");
+        Ok(())
     }
     pub async fn observe_claim(
         &self,

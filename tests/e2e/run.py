@@ -36,6 +36,8 @@ def configuration(storage):
         )
         if name == "cargo":
             section += '\ncargo_download_template="http://upstream:8081/cargo/api/v1/crates/{crate}/{version}/download"'
+        if name == "maven":
+            section += '\ncache_max_age_seconds=0'
         sections.append(section)
     return "\n\n".join(sections) + "\n"
 
@@ -102,6 +104,7 @@ def main():
             staged = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","prefetch")
             explain_digest = re.search(r"explain_digest=([0-9a-f]{64})", staged).group(1)
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","explain",explain_digest,"--repository","npm",log_name="explain.log")
+            compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","status",log_name="operations.log")
             clients = {}
             for name in CLIENTS:
                 log = compose("run","--rm","--no-deps",name,log_name=f"{name}.log")
@@ -120,7 +123,7 @@ def main():
             images = [{key: item[key] for key in ["Id","RepoTags","RepoDigests","Architecture","Os"]} for item in json.loads(inspected)]
             results.append({"storage":storage,"clients":clients,"pending_gate":"passed","denied_gate":"passed",
                             "offline_cache":"passed","retained_blob_tampering":"passed","dependency_outage":"passed",
-                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","images":images,
+                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","images":images,
                             "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()})
             (output/"report.json").write_text(json.dumps(results[-1],indent=2))
             print(f"{storage}: policy gates, offline cache, and tamper rejection passed; report: {output / 'report.json'}", flush=True)

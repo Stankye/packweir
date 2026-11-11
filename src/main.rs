@@ -30,6 +30,8 @@ enum Commands {
     Validate,
     /// Probe the local gateway readiness endpoint (database and blob storage).
     Health,
+    /// Inspect administrative queue, evidence, and recorded-storage statistics.
+    Status,
     /// Inspect a local archive without executing package code.
     Inventory {
         path: PathBuf,
@@ -82,6 +84,19 @@ async fn main() -> Result<()> {
     let config = Arc::new(Config::load(&cli.config)?);
     match cli.command {
         Commands::Validate => println!("configuration valid: {}", config.fingerprint()),
+        Commands::Status => {
+            let report: serde_json::Value = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?
+                .get(config.public_url.join("api/v1/operations")?)
+                .bearer_auth(std::env::var("PACKWEIR_ADMIN_TOKEN")?)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Commands::Health => {
             let mut address = config.listen;
             if address.ip().is_unspecified() {

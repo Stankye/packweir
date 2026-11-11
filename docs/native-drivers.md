@@ -6,6 +6,7 @@ These built-in drivers invoke operator-installed tools with constructed argument
 |---|---|---|
 | `slsa` | The trusted verifier accepted the artifact provenance, and the printed verified statement matches the artifact digest, exact builder, expected GitHub source, and complete commit SHA-1 | Selected supported GitHub builders and SLSA provenance v0.2/v1 statement shapes; no universal SLSA-level claim, automatic registry discovery, or npm-specific verification command |
 | `osv` | All mapped package versions were included in an offline scan, with no reported findings in the pinned database snapshots | Direct mapped versions; no transitive graph, embedded component, reachability, or license-compliance claim |
+| `osv_observed` | All supported registry-observed versions were covered by the offline scan, with no reported findings | Requires complete canonical delivery identities and npm/PyPI discovery binding; no publisher authentication or embedded dependency guarantee |
 | `hipcheck` | All explicitly required analyses passed for every mapped source revision, with a passing recommendation and no errored analyses | Source posture according to the configured plugins and policy; no signature, provenance, or artifact-maliciousness guarantee |
 
 ## Identity mappings
@@ -45,6 +46,12 @@ Submit provenance through the existing document endpoint as `kind="attestation"`
 At most eight candidate attestations are tried for each mapped alias within one shared execution budget and combined 1 MiB stdout limit. A successful proof must satisfy every expected alias. Failed/unsupported verifications remain inconclusive; malformed output, pin mismatches, limits, or timeouts cannot approve a required check. The verifier may retrieve authenticated trust material and contact public transparency services. It uses its supported builder/trust model; independently provision its executable and restrict worker egress appropriately. This integration does not yet provide a Packweir-managed offline SLSA trust store.
 
 ## Offline OSV package checks
+
+### Automatic observed-coordinate mode
+
+Use `kind="osv_observed"` with the same pinned executable, version, and `databases` configuration below to scan the current delivery's observed coordinates without an explicit `packages` list. All supplied identities must be canonical and unambiguous; npm/PyPI require discovery binding. Unsupported versions, malformed/duplicate identities, and missing ecosystem databases remain inconclusive. The result records `mapping_origin="registry_observed"` and does not authenticate publisher identity, prove embedded dependency coverage, or establish that the consumed bytes match an application lockfile.
+
+Both OSV modes require literal releases. npm/Cargo use SemVer parsing and PyPI uses PEP 440. Qualified NuGet input covers one through three numeric components with supported suffixes; four-part revisions remain unsupported. Maven input supports numeric/v-numeric releases and literal qualifiers, including snapshots, while excluding tags/wildcards; arbitrary custom version schemes require separate qualification. Raw versions remain unchanged in scans and exact output coverage checks.
 
 ```toml
 [scanners.vulnerabilities]

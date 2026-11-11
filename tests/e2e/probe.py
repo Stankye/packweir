@@ -47,6 +47,8 @@ def main():
         assert request("/ready", token=None)[0] == 200
         assert request(route(first), token=None)[0] == 401
         assert request("/api/v1/capabilities", token=READ)[0] == 401
+        assert request("/metrics",token=None)[0] == 401
+        assert request("/metrics",token=READ)[0] == 401
         status, body, headers = request(route(first), headers={"Range": "bytes=0-3"})
         assert status == 503 and headers["Retry-After"] and first["digest"] in body.decode(), (status, body)
         assert body != Path(f"/fixtures/{first['digest']}.bytes").read_bytes()
@@ -76,6 +78,14 @@ def main():
                 time.sleep(0.25)
         print("explain_digest=" + catalog[1]["digest"], flush=True)
     elif phase == "verify":
+        status,body,_=request("/api/v1/operations",token=ADMIN)
+        assert status==200,body
+        snapshot=json.loads(body)
+        assert snapshot["jobs"]["complete"]>0 and snapshot["artifacts"]["distinct_digests"]>0
+        assert snapshot["coverage"]["physical_storage_verified"] is False
+        status,body,headers=request("/metrics",token=ADMIN)
+        assert status==200 and headers["Content-Type"].startswith("text/plain"),body
+        assert b"# HELP packweir_" in body and b"fixture-read-token" not in body
         for item in catalog:
             status, body, headers = request(route(item))
             if item.get("denied"):

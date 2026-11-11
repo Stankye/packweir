@@ -1,5 +1,6 @@
 mod hipcheck;
-mod osv;
+mod licenses;
+pub(crate) mod osv;
 mod slsa;
 
 use crate::{
@@ -106,6 +107,10 @@ pub(crate) async fn run(
         output_bytes: 0,
     };
     match &scanner.driver {
+        ScannerDriver::Scancode { policy } => licenses::run(&mut execution, policy).await,
+        ScannerDriver::OsvObserved { databases } => {
+            osv::run_observed(&mut execution, bundle, databases).await
+        }
         ScannerDriver::Slsa {
             builder_id,
             sources,
