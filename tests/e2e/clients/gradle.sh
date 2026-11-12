@@ -13,7 +13,7 @@ repositories {
         content { excludeGroup 'dev.packweir.private' }
     }
     maven {
-        url = uri('http://gateway:8080/r/maven-local/')
+        url = uri('http://gateway:8080/r/maven-prod/')
         allowInsecureProtocol = true
         credentials { username = 'fixture'; password = System.getenv('PACKWEIR_READ_TOKEN') }
         authentication { basic(BasicAuthentication) }

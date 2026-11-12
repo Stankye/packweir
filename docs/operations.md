@@ -44,3 +44,13 @@ Observations cover **all recorded configurations**. They do not prove worker liv
 `/metrics` returns Prometheus text with fixed label values for queue states, evidence outcomes/states, document origins, and decision states. Package names, URLs, digests, tokens, and scanner output are excluded from labels. These are snapshot gauges; process counters, histograms, worker heartbeats, and physical-storage telemetry remain future work. Database failure or a five-second snapshot timeout produces a sanitized `503` response.
 
 For large histories, measure the database cost and choose an appropriate scrape interval. Retention/garbage collection and background aggregation remain separate planned work.
+
+## Hosted lifecycle observations
+
+Version 0.5.0 adds `hosted` and `hosted_jobs` to the same consistent snapshot. Hosted state counts distinguish open, sealed, published, revoked, and aborted stages. File-reference counts, distinct recorded file digests, and recorded bytes describe metadata; shared blobs can have several references, and recorded reference bytes are not deduplicated physical storage usage.
+
+Copy counts derive from persisted [promotion lineage](promotion.md). `copies_with_revoked_source` reports a historical relationship to a currently revoked source. It does not assert that a destination is approved, unsafe, or automatically withdrawn. Source and destination publication decisions remain independent.
+
+Hosted job counts match the complete recorded delivery scope and subject to a hosted file. Duplicate references do not multiply a job, and malformed or mismatched scopes are excluded. These counts cover all configurations and do not establish that current workers will lease every recorded job. The fixed state labels never contain repositories, coordinates, actors, digests, or report text.
+
+Workers validate lease ownership and the actual database clock after acquiring both context and job locks before committing evidence. Waiting behind release assessment cannot silently extend an expired lease. Exhausted leases retain the existing retry/failure handling.

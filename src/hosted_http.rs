@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/v1/staging/{id}", get(inspect))
         .route("/api/v1/staging/{id}/seal", post(seal))
         .route("/api/v1/staging/{id}/abort", post(abort))
+        .route("/api/v1/staging/{id}/copy", post(copy))
         .route("/api/v1/staging/{id}/promote", post(promote))
         .route("/api/v1/staging/{id}/revoke", post(revoke))
         .route(
@@ -157,11 +158,90 @@ async fn inspect(
     }
     match hosted::stage_files(&state.store, id).await {
         Ok(files) => match hosted::promotion_receipt(&state.store, id).await {
-            Ok(receipt) => {
-                Json(json!({"stage":stage,"files":files,"promotion":receipt})).into_response()
-            }
+            Ok(receipt) => match hosted::lineage(&state.store,id).await {
+                Ok(copy)=>Json(json!({"stage":stage,"files":files,"promotion":receipt,"copy":copy.as_ref().map(copy_view)})).into_response(),
+                Err(e)=>error(e),
+            },
             Err(e) => error(e),
         },
+        Err(e) => error(e),
+    }
+}
+
+/// Byte readers can transfer packages without gaining access to private source scanner reports.
+/// Full source evidence remains in the immutable audit/lineage record.
+fn copy_view(receipt: &hosted::CopyReceipt) -> serde_json::Value {
+    let sources:Vec<_> = receipt.source_files.iter().map(|file|{
+        let ids:Vec<_> = file.evidence.iter().filter_map(|entry|entry.get("id").cloned()).collect();
+        json!({"path":file.path,"subject":file.subject,"configuration":file.configuration,
+            "context_revision":file.context_revision,"evidence_digest":file.evidence_digest,"evidence_ids":ids})
+    }).collect();
+    json!({"source_stage":receipt.source_stage,"source_repository":receipt.source_repository,
+        "source_manifest_digest":receipt.source_manifest_digest,"source_evaluated_at":receipt.source_evaluated_at,
+        "source_files":sources,"destination":receipt.destination,"actor":receipt.actor,"created_at":receipt.created_at})
+}
+
+/// Mounted only in the administrative router. Service roles receive the redacted view instead.
+pub async fn copy_evidence(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+    match hosted::lineage(&state.store, id).await {
+        Ok(Some(receipt)) => ([(header::CACHE_CONTROL, "no-store")], Json(receipt)).into_response(),
+        Ok(None) => failure(StatusCode::NOT_FOUND, "copy_not_found"),
+        Err(e) => error(e),
+    }
+}
+
+async fn copy(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<hosted::CopyRequest>,
+) -> Response {
+    let source = match hosted::stage(&state.store, id).await {
+        Ok(stage) => stage,
+        Err(e) => return error(e),
+    };
+    let Some(group) = source.package.namespace.as_deref() else {
+        return failure(StatusCode::BAD_REQUEST, "invalid_coordinates");
+    };
+    let Some(destination) = state
+        .config
+        .repositories
+        .get(&request.destination_repository)
+    else {
+        return failure(StatusCode::NOT_FOUND, "repository_not_found");
+    };
+    if !allowed(&state, &principal, &source, Action::Read)
+        || !principal.allows_copy(&source.repository, &request.destination_repository, group)
+        || !state
+            .config
+            .access
+            .owner_allowed(&request.destination_repository, group)
+    {
+        return failure(StatusCode::FORBIDDEN, "copy_access_denied");
+    }
+    if destination.kind != RepositoryKind::Hosted || destination.ecosystem != Ecosystem::Maven {
+        return failure(StatusCode::BAD_REQUEST, "hosted_maven_repository_required");
+    }
+    let existing = match hosted::lineage(&state.store, request.id).await {
+        Ok(receipt) => receipt,
+        Err(e) => return error(e),
+    };
+    if existing.is_none() {
+        if source.state != StageState::Published {
+            return failure(StatusCode::CONFLICT, "source_not_published");
+        }
+        if let Err(response) = validate_release(&state, &source).await {
+            return *response;
+        }
+    }
+    match hosted::copy_release(&state.store, id, &state.config, &request, &principal.id).await {
+        Ok(receipt) => (StatusCode::CREATED, Json(copy_view(&receipt))).into_response(),
+        Err(e @ HostedError::NotApproved(_)) => {
+            if queue_release(&state, id).await.is_err() {
+                return failure(StatusCode::SERVICE_UNAVAILABLE, "release_unavailable");
+            }
+            error(e)
+        }
         Err(e) => error(e),
     }
 }

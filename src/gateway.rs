@@ -101,6 +101,10 @@ pub fn router(state: AppState) -> Router {
     let admin = Router::new()
         .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/operations", get(operations))
+        .route(
+            "/api/v1/staging/{id}/copy-evidence",
+            get(crate::hosted_http::copy_evidence),
+        )
         .route("/metrics", get(metrics))
         .route("/api/v1/artifacts/{digest}", get(inspect))
         .route("/api/v1/artifacts/{digest}/documents", post(ingest))
@@ -682,7 +686,7 @@ pub fn response(
 async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
-        "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases"],"oci_serving":false,
+        "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases"],"cross_repository_promotion":"sealed_maven_copy_requires_fresh_destination_approval","oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",

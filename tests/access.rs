@@ -383,6 +383,7 @@ fn hosted_repository_settings_are_explicit_and_cannot_fetch_upstream() {
 fn maven_source_reservations_cover_metadata_unknown_paths_and_wrapped_urls() {
     let mut config = configuration();
     config.access.maven_owners.push(MavenOwnership {
+        additional_repositories: vec![],
         namespace: "com.acme".into(),
         repository: "releases".into(),
     });
@@ -480,23 +481,27 @@ fn maven_source_reservations_cover_metadata_unknown_paths_and_wrapped_urls() {
 fn ownership_conflicts_are_rejected_without_prefix_overmatching() {
     let mut config = configuration();
     config.access.maven_owners.push(MavenOwnership {
+        additional_repositories: vec![],
         namespace: "com.acme".into(),
         repository: "releases".into(),
     });
     for namespace in ["com.acme", "com", "com.acme.tools"] {
         let mut conflicting = config.clone();
         conflicting.access.maven_owners.push(MavenOwnership {
+            additional_repositories: vec![],
             namespace: namespace.into(),
             repository: "maven".into(),
         });
         assert!(conflicting.validate().is_err());
     }
     config.access.maven_owners.push(MavenOwnership {
+        additional_repositories: vec![],
         namespace: "com.acmeevil".into(),
         repository: "maven".into(),
     });
     config.validate().unwrap();
     config.access.maven_owners.push(MavenOwnership {
+        additional_repositories: vec![],
         namespace: "com.acme.tools".into(),
         repository: "releases".into(),
     });
@@ -508,6 +513,7 @@ fn ownership_conflicts_are_rejected_without_prefix_overmatching() {
     ] {
         let mut invalid = config.clone();
         invalid.access.maven_owners.push(MavenOwnership {
+            additional_repositories: vec![],
             namespace: namespace.into(),
             repository: repository.into(),
         });
@@ -560,6 +566,7 @@ async fn redirects_cannot_bypass_global_ownership_or_service_namespace_permissio
     repo.download_origins.clear();
     config.allow_private_upstreams = true;
     config.access.maven_owners.push(MavenOwnership {
+        additional_repositories: vec![],
         namespace: "com.acme".into(),
         repository: "releases".into(),
     });
@@ -619,4 +626,204 @@ async fn redirects_cannot_bypass_global_ownership_or_service_namespace_permissio
     );
     assert_eq!(forbidden_hits.load(Ordering::SeqCst), 0);
     server.abort();
+}
+
+#[test]
+fn explicit_authoritative_sets_admit_only_members_and_require_identical_overlap() {
+    let mut config = configuration();
+    config
+        .repositories
+        .insert("production".into(), config.repositories["releases"].clone());
+    config.access.maven_owners = vec![MavenOwnership {
+        namespace: "com.acme".into(),
+        repository: "releases".into(),
+        additional_repositories: vec!["production".into()],
+    }];
+    config.validate().unwrap();
+    for name in ["releases", "production"] {
+        assert!(config.access.owner_allowed(name, "com.acme.tools"));
+        for path in [
+            "com/acme/demo/1.0/demo-1.0.jar",
+            "com.acme/demo/maven-metadata.xml",
+            "com/acme/demo/unknown",
+        ] {
+            assert!(
+                config
+                    .access
+                    .maven_path_allowed(name, &config.repositories[name], path)
+            );
+        }
+    }
+    assert!(!config.access.owner_allowed("maven", "com.acme"));
+    assert!(!config.access.maven_path_allowed(
+        "maven",
+        &config.repositories["maven"],
+        "com/acme/demo/1.0/demo-1.0.jar"
+    ));
+    let target = config.repositories["maven"]
+        .proxy_upstream()
+        .unwrap()
+        .join("com/acme/demo/1.0/demo-1.0.jar")
+        .unwrap();
+    assert!(
+        !config
+            .access
+            .maven_url_allowed("maven", &config.repositories["maven"], &target)
+    );
+    let wrapped = url::Url::parse(&registry::wrap(&config.public_url, "maven", &target)).unwrap();
+    assert!(!config.access.maven_path_allowed(
+        "maven",
+        &config.repositories["maven"],
+        wrapped.path().strip_prefix("/r/maven/").unwrap()
+    ));
+    config.access.maven_owners.push(MavenOwnership {
+        namespace: "com.acme.tools".into(),
+        repository: "production".into(),
+        additional_repositories: vec!["releases".into()],
+    });
+    config.validate().unwrap(); // Primary spelling/order cannot alter the authoritative set.
+    config.access.maven_owners[1]
+        .additional_repositories
+        .clear();
+    assert!(config.validate().is_err());
+    config.access.maven_owners.truncate(1);
+    for additional in [
+        vec!["releases"],
+        vec!["production", "production"],
+        vec!["missing"],
+        vec!["maven"],
+        vec!["npm"],
+    ] {
+        let mut invalid = config.clone();
+        invalid.access.maven_owners[0].additional_repositories =
+            additional.into_iter().map(str::to_owned).collect();
+        assert!(invalid.validate().is_err());
+    }
+    let mut excessive = config.clone();
+    excessive.access.maven_owners[0]
+        .additional_repositories
+        .clear();
+    for index in 0..17 {
+        let name = format!("hosted-{index}");
+        excessive
+            .repositories
+            .insert(name.clone(), config.repositories["releases"].clone());
+        excessive.access.maven_owners[0]
+            .additional_repositories
+            .push(name);
+    }
+    assert!(excessive.validate().is_err());
+    // Legacy TOML requires no new field and still denotes one authoritative repository.
+    let old: AccessConfig =
+        toml::from_str("[[maven_owners]]\nnamespace='com.acme'\nrepository='releases'").unwrap();
+    assert!(old.maven_owners[0].additional_repositories.is_empty());
+}
+
+#[test]
+fn copying_requires_source_read_and_destination_write_without_promotion_inheritance() {
+    let mut base = configuration();
+    base.repositories
+        .insert("production".into(), base.repositories["releases"].clone());
+    let cases = [
+        (
+            vec![
+                grant("releases", vec![Action::Read], Some("com.acme")),
+                grant("production", vec![Action::Write], Some("com.acme")),
+            ],
+            true,
+        ),
+        (
+            vec![grant("releases", vec![Action::Read], Some("com.acme"))],
+            false,
+        ),
+        (
+            vec![grant("production", vec![Action::Write], Some("com.acme"))],
+            false,
+        ),
+        (
+            vec![
+                grant("releases", vec![Action::Promote], None),
+                grant("production", vec![Action::Promote], None),
+            ],
+            false,
+        ),
+        (
+            vec![
+                grant("releases", vec![Action::Read], Some("com.other")),
+                grant("production", vec![Action::Write], Some("com.acme")),
+            ],
+            false,
+        ),
+    ];
+    for (grants, expected) in cases {
+        let mut config = base.clone();
+        config
+            .access
+            .principals
+            .insert("builder".into(), principal(grants));
+        let identity = control(&config, &"s".repeat(32))
+            .authenticate(&headers(&"s".repeat(32)))
+            .unwrap();
+        assert_eq!(
+            identity.allows_copy("releases", "production", "com.acme"),
+            expected
+        );
+        assert_eq!(
+            identity.allows_copy("releases", "production", "com.acme.tools"),
+            expected
+        );
+        assert!(!identity.allows_copy("releases", "production", "com.acmeevil"));
+        assert!(!identity.allows_copy("production", "releases", "com.acme"));
+        assert!(!identity.allows_copy("releases", "releases", "com.acme"));
+        assert!(!identity.allows_copy("releases", "production", "com..acme"));
+        if expected {
+            assert!(!identity.allows("production", Action::Promote, Some("com.acme")));
+        }
+    }
+    let access =
+        AccessControl::from_tokens(&base, &"a".repeat(32), &"r".repeat(32), &BTreeMap::new())
+            .unwrap();
+    assert!(
+        !access
+            .authenticate(&headers(&"r".repeat(32)))
+            .unwrap()
+            .allows_copy("releases", "production", "com.acme")
+    );
+}
+
+#[test]
+fn explicit_proxy_primary_does_not_enable_queries_or_unknown_download_sources() {
+    let mut config = configuration();
+    config.access.maven_owners.push(MavenOwnership {
+        namespace: "com.acme".into(),
+        repository: "maven".into(),
+        additional_repositories: vec!["releases".into()],
+    });
+    config.validate().unwrap();
+    let repo = &config.repositories["maven"];
+    let mut target = repo
+        .proxy_upstream()
+        .unwrap()
+        .join("com/acme/demo/1.0/demo-1.0.jar")
+        .unwrap();
+    assert!(config.access.maven_url_allowed("maven", repo, &target));
+    target.set_query(Some("source=production"));
+    assert!(!config.access.maven_url_allowed("maven", repo, &target));
+    assert!(
+        !config.access.maven_url_allowed(
+            "maven",
+            repo,
+            &"https://unknown.example.test/com/acme/demo.jar"
+                .parse()
+                .unwrap()
+        )
+    );
+    assert!(!config.access.owner_allowed("maven-other", "com.acme"));
+    let public = serde_json::to_string(&config).unwrap();
+    assert!(!public.contains(&"s".repeat(32)));
+    let original = config.fingerprint();
+    config.access.maven_owners[0]
+        .additional_repositories
+        .clear();
+    assert_ne!(original, config.fingerprint());
 }

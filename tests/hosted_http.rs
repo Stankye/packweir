@@ -81,6 +81,7 @@ impl Fixture {
         };
         config.access.legacy_read_enabled = false;
         config.access.maven_owners = vec![MavenOwnership {
+            additional_repositories: vec![],
             namespace: "dev.private".into(),
             repository: "maven".into(),
         }];

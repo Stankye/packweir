@@ -81,6 +81,15 @@ enum HostedCommands {
     Seal { id: uuid::Uuid },
     /// Abandon an open stage and release its never-sealed coordinate reservation.
     Abort { id: uuid::Uuid },
+    /// Copy a published release into a sealed destination with fresh destination checks.
+    Copy {
+        source: uuid::Uuid,
+        repository: String,
+        #[arg(long)]
+        source_manifest: String,
+        #[arg(long)]
+        id: Option<uuid::Uuid>,
+    },
     /// Publish exactly the reviewed manifest after all current checks pass.
     Promote {
         id: uuid::Uuid,
@@ -145,6 +154,9 @@ async fn hosted_command(config: &Config, command: HostedCommands) -> Result<()> 
                 .public_url
                 .join(&format!("api/v1/staging/{id}/abort"))?,
         ),
+        HostedCommands::Copy {source,repository,source_manifest,id} => client
+            .post(config.public_url.join(&format!("api/v1/staging/{source}/copy"))?)
+            .json(&serde_json::json!({"id":id.unwrap_or_else(uuid::Uuid::new_v4),"destination_repository":repository,"source_manifest_digest":source_manifest})),
         HostedCommands::Promote { id, manifest } => client
             .post(
                 config

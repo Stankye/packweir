@@ -105,6 +105,24 @@ pub struct SealReceipt {
     pub manifest_digest: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyRequest {
+    pub id: Uuid,
+    pub destination_repository: String,
+    pub source_manifest_digest: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CopyReceipt {
+    pub source_stage: Uuid,
+    pub source_repository: String,
+    pub source_manifest_digest: String,
+    pub source_evaluated_at: DateTime<Utc>,
+    pub source_files: Vec<PromotionFile>,
+    pub destination: SealReceipt,
+    pub actor: String,
+    pub created_at: DateTime<Utc>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromotionFile {
     pub path: String,
     pub subject: String,
@@ -410,8 +428,21 @@ fn manifest_from(row: &PgRow, stage: &Stage, files: Vec<HostedFile>) -> Result<M
     Ok(manifest)
 }
 pub async fn seal(store: &Store, id: Uuid, config: &Config, actor: &str) -> Result<SealReceipt> {
+    let tx = store.pool.begin().await?;
+    let (tx, receipt) = seal_in(tx, id, config, actor).await?;
+    tx.commit().await?;
+    Ok(receipt)
+}
+
+// Own the transaction so ordinary sealing and atomic cross-repository copying share the
+// exact URL/context lock order, immutable registration, and job creation behavior.
+async fn seal_in<'a>(
+    mut tx: Transaction<'a, Postgres>,
+    id: Uuid,
+    config: &Config,
+    actor: &str,
+) -> Result<(Transaction<'a, Postgres>, SealReceipt)> {
     actor_valid(actor)?;
-    let mut tx = store.pool.begin().await?;
     let (mut stage, row) = locked_stage(&mut tx, id).await?;
     if matches!(stage.state, StageState::Revoked | StageState::Aborted) {
         return Err(HostedError::Conflict("stage is terminal".into()));
@@ -421,12 +452,14 @@ pub async fn seal(store: &Store, id: Uuid, config: &Config, actor: &str) -> Resu
     if stage.state != StageState::Open {
         let manifest = manifest_from(&row, &stage, files)?;
         let manifest_digest = stage.manifest_digest.clone().unwrap();
-        tx.commit().await?;
-        return Ok(SealReceipt {
-            stage,
-            manifest,
-            manifest_digest,
-        });
+        return Ok((
+            tx,
+            SealReceipt {
+                stage,
+                manifest,
+                manifest_digest,
+            },
+        ));
     }
     if files.is_empty() {
         return Err(HostedError::Invalid("cannot seal an empty stage".into()));
@@ -496,12 +529,225 @@ pub async fn seal(store: &Store, id: Uuid, config: &Config, actor: &str) -> Resu
         json!({"actor":actor,"manifest_digest":manifest_digest}),
     )
     .await?;
+    Ok((
+        tx,
+        SealReceipt {
+            stage,
+            manifest,
+            manifest_digest,
+        },
+    ))
+}
+
+fn validate_lineage(row: &PgRow, destination: &Stage) -> Result<CopyReceipt> {
+    let mut receipt: CopyReceipt = serde_json::from_value(row.try_get("receipt")?)?;
+    if receipt.source_stage != row.try_get::<Uuid, _>("source_stage_id")?
+        || receipt.source_manifest_digest != row.try_get::<String, _>("source_manifest_digest")?
+        || receipt.destination.stage.id != destination.id
+        || receipt.destination.manifest_digest
+            != row.try_get::<String, _>("destination_manifest_digest")?
+        || destination.manifest_digest.as_deref()
+            != Some(receipt.destination.manifest_digest.as_str())
+        || receipt.destination.stage.repository != destination.repository
+        || receipt.destination.stage.package != destination.package
+        || receipt.destination.stage.owner != destination.owner
+        || receipt.actor != row.try_get::<String, _>("actor")?
+        || receipt.created_at != row.try_get::<DateTime<Utc>, _>("created_at")?
+        || receipt.source_files.len() > MAX_FILES
+        || receipt.destination.manifest_digest
+            != sha256(&serde_json::to_vec(&receipt.destination.manifest)?)
+    {
+        return Err(HostedError::Internal(
+            "copy receipt binding mismatch".into(),
+        ));
+    }
+    for file in &receipt.source_files {
+        if file.evidence.len() > 1024
+            || file.evidence_digest != sha256(&serde_json::to_vec(&file.evidence)?)
+        {
+            return Err(HostedError::Internal(
+                "copy source evidence integrity mismatch".into(),
+            ));
+        }
+    }
+    // A receipt is historical; retries report current destination state without reviving it.
+    receipt.destination.stage = destination.clone();
+    Ok(receipt)
+}
+
+pub async fn lineage(store: &Store, id: Uuid) -> Result<Option<CopyReceipt>> {
+    let mut tx = store.pool.begin().await?;
+    // One transaction keeps the current destination state and lineage consistent for inspection.
+    let row=sqlx::query("SELECT l.receipt,l.source_stage_id,l.source_manifest_digest,l.destination_manifest_digest,l.actor,l.created_at FROM hosted_lineage l JOIN hosted_stages s ON s.id=l.destination_stage_id WHERE l.destination_stage_id=$1 FOR SHARE OF s")
+        .bind(id).fetch_optional(&mut *tx).await?;
+    let Some(row) = row else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let destination = stage_row(
+        &sqlx::query("SELECT * FROM hosted_stages WHERE id=$1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?,
+    )?;
+    let receipt = validate_lineage(&row, &destination)?;
     tx.commit().await?;
-    Ok(SealReceipt {
-        stage,
-        manifest,
-        manifest_digest,
-    })
+    Ok(Some(receipt))
+}
+
+/// Copy only immutable, published, currently approved bytes. Destination publication is a
+/// separate decision: this transaction creates new final scopes and jobs, never evidence.
+pub async fn copy_release(
+    store: &Store,
+    source_id: Uuid,
+    config: &Config,
+    request: &CopyRequest,
+    actor: &str,
+) -> Result<CopyReceipt> {
+    actor_valid(actor)?;
+    if source_id == request.id
+        || request.destination_repository.is_empty()
+        || request.source_manifest_digest.len() != 64
+    {
+        return Err(HostedError::Invalid(
+            "copy requires distinct stage IDs and an exact source manifest".into(),
+        ));
+    }
+    let mut tx = store.pool.begin().await?;
+    // Serialize a caller-supplied operation ID even before its destination row exists.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("hosted-copy:{}", request.id))
+        .execute(&mut *tx)
+        .await?;
+    // Multiple-stage operations take stage rows in UUID order, before origin/context locks.
+    let rows = sqlx::query("SELECT * FROM hosted_stages WHERE id=ANY($1) ORDER BY id FOR UPDATE")
+        .bind(vec![source_id, request.id])
+        .fetch_all(&mut *tx)
+        .await?;
+    let source_row = rows
+        .iter()
+        .find(|row| row.get::<Uuid, _>("id") == source_id)
+        .ok_or(HostedError::NotFound)?;
+    let source = stage_row(source_row)?;
+    let destination_row = rows
+        .iter()
+        .find(|row| row.get::<Uuid, _>("id") == request.id);
+    if let Some(destination_row) = destination_row {
+        let Some(record) =
+            sqlx::query("SELECT * FROM hosted_lineage WHERE destination_stage_id=$1")
+                .bind(request.id)
+                .fetch_optional(&mut *tx)
+                .await?
+        else {
+            return Err(HostedError::Conflict(
+                "destination stage ID already belongs to another operation".into(),
+            ));
+        };
+        let receipt = validate_lineage(&record, &stage_row(destination_row)?)?;
+        if receipt.source_stage != source_id
+            || receipt.source_manifest_digest != request.source_manifest_digest
+            || receipt.destination.stage.repository != request.destination_repository
+            || receipt.actor != actor
+        {
+            return Err(HostedError::Conflict(
+                "copy idempotency key was used for a different request".into(),
+            ));
+        }
+        tx.commit().await?;
+        return Ok(receipt);
+    }
+    if source.state != StageState::Published || source.repository == request.destination_repository
+    {
+        return Err(HostedError::Conflict(
+            "copy requires a published source and a different repository".into(),
+        ));
+    }
+    let source_files = files_in(&mut tx, source_id).await?;
+    checked_config(config, &source, &source_files)?;
+    manifest_from(source_row, &source, source_files.clone())?;
+    if source.manifest_digest.as_deref() != Some(request.source_manifest_digest.as_str()) {
+        return Err(HostedError::Conflict("source manifest changed".into()));
+    }
+    let group = source
+        .package
+        .namespace
+        .as_deref()
+        .ok_or_else(|| HostedError::Invalid("Maven group required".into()))?;
+    if !config.access.owner_allowed(&source.repository, group)
+        || !config
+            .access
+            .owner_allowed(&request.destination_repository, group)
+    {
+        return Err(HostedError::Invalid(
+            "source or destination is outside namespace ownership".into(),
+        ));
+    }
+    let Some(repository) = config.repositories.get(&request.destination_repository) else {
+        return Err(HostedError::Invalid(
+            "unknown destination repository".into(),
+        ));
+    };
+    if repository.kind != crate::config::RepositoryKind::Hosted
+        || repository.ecosystem != Ecosystem::Maven
+        || !repository.retain
+    {
+        return Err(HostedError::Invalid(
+            "destination must be retained hosted Maven storage".into(),
+        ));
+    }
+    // Reserve before taking shared content locks. Colliding reservations roll back all work.
+    sqlx::query("INSERT INTO hosted_stages(id,repository,package_name,version,package,owner) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(request.id).bind(&request.destination_repository).bind(&source.package.name).bind(&source.package.version).bind(serde_json::to_value(&source.package)?).bind(actor).execute(&mut *tx).await?;
+    for file in &source_files {
+        let mut artifact = file.artifact.clone();
+        artifact.repository = request.destination_repository.clone();
+        artifact.origin = config
+            .public_url
+            .join(&format!("r/{}/{}", artifact.repository, file.path))
+            .map_err(|e| HostedError::Invalid(e.to_string()))?
+            .to_string();
+        sqlx::query("INSERT INTO hosted_files(stage_id,path,digest,artifact) VALUES($1,$2,$3,$4)")
+            .bind(request.id)
+            .bind(&file.path)
+            .bind(&artifact.digest)
+            .bind(serde_json::to_value(&artifact)?)
+            .execute(&mut *tx)
+            .await?;
+    }
+    // Sealing obtains final-origin advisory locks before sorted content locks, as every other
+    // registration path does. Source approval is sampled after all of those waits.
+    let (mut tx, destination) = seal_in(tx, request.id, config, actor).await?;
+    let (source_evaluated_at, evidence, decision) =
+        evaluate_files(&mut tx, config, &source_files).await?;
+    if decision != Decision::Approved {
+        return Err(HostedError::NotApproved(
+            "source release is not currently approved".into(),
+        ));
+    }
+    let created_at: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let receipt = CopyReceipt {
+        source_stage: source.id,
+        source_repository: source.repository,
+        source_manifest_digest: request.source_manifest_digest.clone(),
+        source_evaluated_at,
+        source_files: evidence,
+        destination,
+        actor: actor.into(),
+        created_at,
+    };
+    sqlx::query("INSERT INTO hosted_lineage(destination_stage_id,source_stage_id,source_manifest_digest,destination_manifest_digest,actor,created_at,receipt) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(request.id).bind(source_id).bind(&receipt.source_manifest_digest).bind(&receipt.destination.manifest_digest).bind(actor).bind(created_at).bind(serde_json::to_value(&receipt)?).execute(&mut *tx).await?;
+    audit(
+        &mut tx,
+        "hosted_release_copied",
+        request.id,
+        serde_json::to_value(&receipt)?,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(receipt)
 }
 
 async fn evaluate_files(

@@ -102,9 +102,13 @@ packweir hosted revoke <stage-uuid> --manifest <reviewed-manifest-sha256>
 
 Revocation is terminal and preserves the sealed coordinate reservation, original manifest, and audit history. An open stage can be abandoned with `hosted abort <stage-uuid>` by its original writer; its history remains, and a fresh stage UUID can reserve those never-sealed coordinates again. Sealed coordinates cannot be reused. Requests already authorized before a committed revocation may still be in flight.
 
-Original delivery origins bind the configured `public_url` at sealing. Changing that origin requires an explicit hosted-data migration; the gateway fails closed on mismatched stored delivery origins. Security-policy changes at the same origin trigger fresh analysis. Blob/reference garbage collection, storage quotas, stage expiration, cross-repository promotion, release-signing workflows, and backup/restore qualification remain unfinished. Proxy delivery with `retain=false` preserves blobs referenced by any hosted stage.
+Original delivery origins bind the configured `public_url` at sealing. Changing that origin requires an explicit hosted-data migration; the gateway fails closed on mismatched stored delivery origins. Security-policy changes at the same origin trigger fresh analysis. Blob/reference garbage collection, storage quotas, stage expiration, remote repository federation, release-signing workflows, and backup/restore qualification remain unfinished. Proxy delivery with `retain=false` preserves blobs referenced by any hosted stage.
 
 Control requests have a 120-second deadline, uploaded bodies a 60-second deadline, and hosted reads a 30-second deadline. Large histories can exceed the current synchronous discovery budget; indexed aggregation/pagination is future work. Database/storage failures produce sanitized errors.
+
+## Promotion to another repository
+
+[Cross-repository promotion](promotion.md) copies a published release into a new sealed destination with its own evidence and policy evaluation. Namespace ownership can explicitly include additional hosted repositories; it never enables public fallback. Source read and destination write are required for copying, and destination publication retains a separate promote permission. The copy receipt preserves the source assessment while service responses limit source report visibility.
 
 ## API and qualification
 

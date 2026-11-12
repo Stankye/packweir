@@ -21,6 +21,8 @@ pub struct OperationalSnapshot {
     pub decisions: DecisionCounts,
     pub audit_records: i64,
     pub discovery: DiscoveryCounts,
+    pub hosted: HostedCounts,
+    pub hosted_jobs: HostedJobCounts,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +104,34 @@ pub struct DiscoveryCounts {
     pub conflicting_artifact_urls: i64,
 }
 
+/// Recorded lifecycle states and references, never a current approval decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostedCounts {
+    pub open: i64,
+    pub sealed: i64,
+    pub published: i64,
+    pub revoked: i64,
+    pub aborted: i64,
+    pub file_references: i64,
+    pub distinct_file_digests: i64,
+    /// Sum of valid recorded sizes per file reference, including shared blobs.
+    pub recorded_reference_bytes: i64,
+    pub oldest_open_age_seconds: f64,
+    pub copied_stages: i64,
+    /// Historical source state only; destination approval/revocation is independent.
+    pub copies_with_revoked_source: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostedJobCounts {
+    pub queued: i64,
+    pub running: i64,
+    pub complete: i64,
+    pub failed: i64,
+    pub expired_leases: i64,
+    pub oldest_queued_age_seconds: f64,
+}
+
 // A single statement keeps cross-table counts and database time consistent even
 // while workers register results. JSON timestamps are guarded before casting;
 // invalid stored documents must not turn into a misleading valid-evidence count.
@@ -147,6 +177,23 @@ WITH observation AS MATERIALIZED (
             false
         ) AS binding_valid
     FROM evidence e LEFT JOIN contexts c ON c.subject=e.subject
+), hosted_jobs AS MATERIALIZED (
+    SELECT j.* FROM jobs j
+    WHERE jsonb_typeof(j.scope)='object'
+        AND jsonb_typeof(j.scope->'repository')='string'
+        AND jsonb_typeof(j.scope->'origin')='string'
+        AND jsonb_typeof(j.scope->'filename')='string'
+        AND jsonb_typeof(j.scope->'package')='object'
+        AND j.scope->'package'->>'ecosystem'='maven'
+        AND j.scope->'package'->>'basis'='hosted_coordinates_declared'
+        AND jsonb_typeof(j.scope->'package'->'name')='string'
+        AND jsonb_typeof(j.scope->'package'->'version')='string'
+        AND jsonb_typeof(j.scope->'package'->'namespace')='string'
+        AND jsonb_typeof(j.scope->'package'->'purl')='string'
+        AND EXISTS (SELECT 1 FROM hosted_files f WHERE f.digest=j.subject
+            AND j.scope=jsonb_build_object('repository',f.artifact->'repository',
+                'origin',f.artifact->'origin','filename',f.artifact->'filename',
+                'package',f.artifact->'package'))
 ), classified_evidence AS MATERIALIZED (
     SELECT e.document->>'outcome' AS outcome,
         CASE WHEN NOT e.binding_valid THEN 'binding_invalid'
@@ -210,7 +257,28 @@ SELECT o.observed_at,
         'claims', count(*),
         'unidentified_claims', count(*) FILTER (WHERE package IS NULL),
         'conflicting_artifact_urls', (SELECT count(*) FROM (SELECT repository,origin FROM package_claims GROUP BY repository,origin HAVING count(*)>1) AS conflicts)
-    ) FROM package_claims) AS discovery
+    ) FROM package_claims) AS discovery,
+    (SELECT jsonb_build_object(
+        'open',count(*) FILTER (WHERE state='open'),
+        'sealed',count(*) FILTER (WHERE state='sealed'),
+        'published',count(*) FILTER (WHERE state='published'),
+        'revoked',count(*) FILTER (WHERE state='revoked'),
+        'aborted',count(*) FILTER (WHERE state='aborted'),
+        'oldest_open_age_seconds',COALESCE(GREATEST(0,extract(epoch FROM (o.observed_at-min(created_at) FILTER (WHERE state='open')))),0),
+        'file_references',(SELECT count(*) FROM hosted_files),
+        'distinct_file_digests',(SELECT count(DISTINCT digest) FROM hosted_files),
+        'recorded_reference_bytes',(SELECT COALESCE(sum(CASE WHEN jsonb_typeof(artifact->'size')='number' AND artifact->>'size' ~ '^[0-9]{1,18}$' THEN (artifact->>'size')::bigint ELSE 0 END),0)::bigint FROM hosted_files),
+        'copied_stages',(SELECT count(*) FROM hosted_lineage),
+        'copies_with_revoked_source',(SELECT count(*) FROM hosted_lineage l JOIN hosted_stages s ON s.id=l.source_stage_id WHERE s.state='revoked')
+    ) FROM hosted_stages) AS hosted,
+    (SELECT jsonb_build_object(
+        'queued',count(*) FILTER (WHERE state='queued'),
+        'running',count(*) FILTER (WHERE state='running'),
+        'complete',count(*) FILTER (WHERE state='complete'),
+        'failed',count(*) FILTER (WHERE state='failed'),
+        'expired_leases',count(*) FILTER (WHERE state='running' AND lease_until<o.observed_at),
+        'oldest_queued_age_seconds',COALESCE(GREATEST(0,extract(epoch FROM (o.observed_at-min(created_at) FILTER (WHERE state='queued')))),0)
+    ) FROM hosted_jobs) AS hosted_jobs
 FROM observation o
 "#;
 
@@ -231,6 +299,8 @@ pub async fn snapshot(store: &Store) -> Result<OperationalSnapshot> {
         decisions: serde_json::from_value(row.get("decisions"))?,
         audit_records: row.get("audit_records"),
         discovery: serde_json::from_value(row.get("discovery"))?,
+        hosted: serde_json::from_value(row.get("hosted"))?,
+        hosted_jobs: serde_json::from_value(row.get("hosted_jobs"))?,
     })
 }
 
@@ -402,6 +472,79 @@ impl OperationalSnapshot {
             "packweir_conflicting_discovery_urls",
             "Repository artifact URLs with multiple recorded coordinate claims.",
             self.discovery.conflicting_artifact_urls,
+        );
+        family(
+            &mut output,
+            "packweir_hosted_stages",
+            "Recorded hosted lifecycle states, independent of current security approval.",
+            "state",
+            &[
+                ("open", self.hosted.open),
+                ("sealed", self.hosted.sealed),
+                ("published", self.hosted.published),
+                ("revoked", self.hosted.revoked),
+                ("aborted", self.hosted.aborted),
+            ],
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_file_references",
+            "Recorded hosted file references, including shared blobs.",
+            self.hosted.file_references,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_file_digest_references",
+            "Distinct digests referenced by hosted files; physical presence is not verified.",
+            self.hosted.distinct_file_digests,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_recorded_reference_bytes",
+            "Sum of valid recorded hosted file sizes per reference, not disk or deduplicated storage use.",
+            self.hosted.recorded_reference_bytes,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_oldest_open_age_seconds",
+            "Age of the oldest recorded open stage, zero when none exist.",
+            self.hosted.oldest_open_age_seconds,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_copied_stages",
+            "Recorded hosted copy lineage rows.",
+            self.hosted.copied_stages,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_copies_with_revoked_source",
+            "Recorded copies whose source lifecycle state is revoked; destination state and approval are independent.",
+            self.hosted.copies_with_revoked_source,
+        );
+        family(
+            &mut output,
+            "packweir_hosted_jobs",
+            "Recorded jobs with exact hosted file delivery bindings across all configurations.",
+            "state",
+            &[
+                ("queued", self.hosted_jobs.queued),
+                ("running", self.hosted_jobs.running),
+                ("complete", self.hosted_jobs.complete),
+                ("failed", self.hosted_jobs.failed),
+            ],
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_expired_job_leases",
+            "Running hosted-bound jobs whose recorded lease deadline has expired.",
+            self.hosted_jobs.expired_leases,
+        );
+        gauge(
+            &mut output,
+            "packweir_hosted_oldest_queued_age_seconds",
+            "Age of the oldest queued hosted-bound job, zero when none exist.",
+            self.hosted_jobs.oldest_queued_age_seconds,
         );
         output
     }

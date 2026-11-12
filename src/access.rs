@@ -64,6 +64,24 @@ pub struct Grant {
 pub struct MavenOwnership {
     pub namespace: String,
     pub repository: String,
+    #[serde(default)]
+    pub additional_repositories: Vec<String>,
+}
+
+impl MavenOwnership {
+    fn admits(&self, repository: &str) -> bool {
+        self.repository == repository
+            || self
+                .additional_repositories
+                .iter()
+                .any(|candidate| candidate == repository)
+    }
+
+    fn authoritative_set(&self) -> BTreeSet<&str> {
+        std::iter::once(self.repository.as_str())
+            .chain(self.additional_repositories.iter().map(String::as_str))
+            .collect()
+    }
 }
 
 fn namespace_matches(expected: &str, actual: &str) -> bool {
@@ -161,14 +179,28 @@ impl AccessConfig {
                 owners.insert((&owner.namespace, &owner.repository)),
                 "duplicate Maven ownership rule"
             );
+            let additional: BTreeSet<_> = owner.additional_repositories.iter().collect();
+            ensure!(
+                owner.additional_repositories.len() <= 16
+                    && additional.len() == owner.additional_repositories.len()
+                    && !additional.contains(&owner.repository),
+                "at most 16 unique additional authoritative repositories, excluding the primary"
+            );
+            ensure!(
+                owner.additional_repositories.iter().all(|name| repositories
+                    .get(name)
+                    .is_some_and(|repo| repo.kind == RepositoryKind::Hosted
+                        && repo.ecosystem == Ecosystem::Maven)),
+                "additional authoritative repositories must be hosted Maven repositories"
+            );
         }
         for (index, owner) in self.maven_owners.iter().enumerate() {
             for other in &self.maven_owners[index + 1..] {
                 ensure!(
-                    owner.repository == other.repository
+                    owner.authoritative_set() == other.authoritative_set()
                         || !(namespace_matches(&owner.namespace, &other.namespace)
                             || namespace_matches(&other.namespace, &owner.namespace)),
-                    "overlapping Maven ownership across repositories"
+                    "overlapping Maven ownership must have identical authoritative repositories"
                 );
             }
         }
@@ -179,7 +211,7 @@ impl AccessConfig {
     pub fn owner_allowed(&self, repository: &str, group: &str) -> bool {
         valid_namespace(group)
             && self.maven_owners.iter().all(|owner| {
-                !namespace_matches(&owner.namespace, group) || owner.repository == repository
+                !namespace_matches(&owner.namespace, group) || owner.admits(repository)
             })
     }
 
@@ -201,7 +233,7 @@ impl AccessConfig {
                 || reservation_path
                     .strip_prefix(&prefix)
                     .is_some_and(|tail| tail.starts_with('/')))
-                || owner.repository == repository
+                || owner.admits(repository)
         })
     }
 
@@ -264,6 +296,14 @@ pub struct Principal {
 }
 
 impl Principal {
+    /// Copying grants no destination publication authority and transfers no source approval.
+    pub fn allows_copy(&self, source: &str, destination: &str, group: &str) -> bool {
+        source != destination
+            && valid_namespace(group)
+            && self.allows(source, Action::Read, Some(group))
+            && self.allows(destination, Action::Write, Some(group))
+    }
+
     pub fn allows(&self, repository: &str, action: Action, namespace: Option<&str>) -> bool {
         if self.expires_at.is_some_and(|expiry| expiry <= Utc::now()) {
             return false;

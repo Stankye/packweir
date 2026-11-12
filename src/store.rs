@@ -332,9 +332,20 @@ impl Store {
             current == job.context_revision,
             "evidence context changed during analysis"
         );
-        let locked = sqlx::query("SELECT id FROM jobs WHERE id=$1 AND lease_token=$2 AND state='running' AND lease_until>now() FOR UPDATE")
+        // Both context and job locks may wait. Evaluate the clock only after the
+        // row lock is acquired, not in a predicate evaluated before LockRows.
+        let locked = sqlx::query("SELECT lease_until FROM jobs WHERE id=$1 AND lease_token=$2 AND state='running' FOR UPDATE")
             .bind(job.id).bind(job.lease).fetch_optional(&mut *tx).await?;
-        ensure!(locked.is_some(), "job lease lost");
+        let locked = locked.ok_or_else(|| anyhow::anyhow!("job lease lost"))?;
+        let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        ensure!(
+            locked
+                .get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_until")
+                .is_some_and(|until| until > now),
+            "job lease expired while waiting for locks"
+        );
         for e in evidence {
             ensure!(
                 e.subject == job.subject && e.configuration == job.configuration,

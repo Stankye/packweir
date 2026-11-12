@@ -11,7 +11,8 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 ## Current implementation
 
 - Five registry adapters: npm, PyPI, Cargo sparse index, Maven/Gradle repositories, and NuGet v3.
-- Hosted Maven releases with native Gradle uploads, sealed manifests, evidence-bound promotion, terminal revocation, and Maven/Gradle consumption.
+- Hosted Maven releases with native Gradle uploads, sealed manifests, evidence-bound publication, terminal revocation, and Maven/Gradle consumption.
+- Cross-repository Maven promotion with immutable copy lineage, fresh destination policy checks, and separate source-read/destination-write/publication permissions.
 - Scoped service credentials with independent read/write/promote grants and Maven namespace ownership that prevents public-proxy fallback.
 - Observed package coordinates/PURLs, additive repository and namespace/package policies, and isolated delivery approvals over shared blobs.
 - `packweir explain` with policy layers, per-check freshness, scanner availability, job state, and next actions.
@@ -92,7 +93,8 @@ The administrative endpoints below require `Authorization: Bearer <admin-token>`
 | Method | Path | Behavior |
 |---|---|---|
 | GET | `/api/v1/capabilities` | Experimental capability status |
-| GET | `/api/v1/operations` | Consistent queue, evidence, and recorded-storage metadata snapshot |
+| GET | `/api/v1/operations` | Consistent queue, evidence, hosted lifecycle, and recorded-storage metadata snapshot |
+| GET | `/api/v1/staging/{id}/copy-evidence` | Administrative export of a captured copy assessment |
 | GET | `/api/v1/artifacts/{digest}` | Per-delivery decisions/explanations, evidence, and documents; optional `repository`/`origin` filters |
 | POST | `/api/v1/artifacts/{digest}/documents` | Preserve an external document, without asserting trust |
 | GET | `/api/v1/artifacts/{digest}/documents/{blob}` | Retrieve a document linked to this artifact |
@@ -131,4 +133,4 @@ See [license observations](docs/licenses.md) to configure ScanCode/SPDX policy a
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 
-See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing beyond immutable Maven releases, repository groups, general RBAC, cross-repository promotion, a UI, and VM sandboxing remain unfinished. See [hosted releases](docs/hosted.md) for supported publishing workflows and limits.
+See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing beyond immutable Maven releases, repository groups, general RBAC, remote repository federation, a UI, and VM sandboxing remain unfinished. See [hosted releases](docs/hosted.md) and [cross-repository promotion](docs/promotion.md) for supported publishing workflows and limits.

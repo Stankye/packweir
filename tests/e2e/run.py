@@ -2,6 +2,7 @@
 """Docker/Compose client qualification. Run with Python 3 on Linux, WSL, or Windows."""
 import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,11 +28,20 @@ def configuration(storage):
         '[[policy_scopes]]\nname="fixture-npm-scope"\nrepository="npm"\nnamespace="@packweir"\n'
         '[policy_scopes.policy]\nrevision="fixture-scope-v1"\nrequired=["archive_safety"]',
         '[repositories.maven-local]\nkind="hosted"\necosystem="maven"\nretain=true',
+        '[repositories.maven-prod]\nkind="hosted"\necosystem="maven"\nretain=true\n'
+        '[repositories.maven-prod.policy]\nrevision="production-fixture-review-v1"\nrequired=["fixture_review"]',
         '[access.principals.publisher]\ntoken_env="PACKWEIR_PUBLISH_TOKEN"\n'
         '[[access.principals.publisher.grants]]\nrepository="maven-local"\nactions=["write"]\nnamespace="dev.packweir.private"',
         '[access.principals.promoter]\ntoken_env="PACKWEIR_PROMOTE_TOKEN"\n'
         '[[access.principals.promoter.grants]]\nrepository="maven-local"\nactions=["promote"]\nnamespace="dev.packweir.private"',
-        '[[access.maven_owners]]\nnamespace="dev.packweir.private"\nrepository="maven-local"',
+        '[access.principals.copier]\ntoken_env="PACKWEIR_COPY_TOKEN"\n'
+        '[[access.principals.copier.grants]]\nrepository="maven-local"\nactions=["read"]\nnamespace="dev.packweir.private"\n'
+        '[[access.principals.copier.grants]]\nrepository="maven-prod"\nactions=["write"]\nnamespace="dev.packweir.private"',
+        '[access.principals.prod-promoter]\ntoken_env="PACKWEIR_PROD_PROMOTE_TOKEN"\n'
+        '[[access.principals.prod-promoter.grants]]\nrepository="maven-prod"\nactions=["promote"]\nnamespace="dev.packweir.private"',
+        '[[access.maven_owners]]\nnamespace="dev.packweir.private"\nrepository="maven-local"\nadditional_repositories=["maven-prod"]',
+        '[scanners.fixture_review]\nprogram="/bin/sh"\nargs=["resource-review_script"]\nversion="qualification-fixture-only-v1"\ntimeout_seconds=10\n'
+        '[scanners.fixture_review.resources.review_script]\npath="/tests/review_fixture.sh"\nsha256="' + hashlib.sha256((ROOT/"tests/e2e/review_fixture.sh").read_bytes()).hexdigest() + '"',
     ]
     for name in ["npm", "pypi", "cargo", "maven", "nuget"]:
         suffix = "simple/" if name == "pypi" else ""
@@ -119,7 +129,7 @@ def main():
             hosted_log = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-promote",stage_id,log_name="hosted-promote.log")
             hosted_proof = json.loads(re.search(r"PACKWEIR_HOSTED_PROOF=(.+)", hosted_log).group(1))
             hosted_proof["publisher"] = {"client":"gradle-maven-publish", "version_output":publication_version.group(1), "log":"hosted-publish.log"}
-            hosted_status_log = compose("exec","-T","--env","PACKWEIR_SERVICE_TOKEN=fixture-promote-token-000000000000000","gateway","packweir","--config","/app/e2e.toml","hosted","status",stage_id,log_name="hosted-status.log")
+            hosted_status_log = compose("exec","-T","--env","PACKWEIR_SERVICE_TOKEN=fixture-promote-token-000000000000000","gateway","packweir","--config","/app/e2e.toml","hosted","status",stage_id,log_name="hosted-source-status.log")
             hosted_status = json.loads(hosted_status_log)
             if hosted_status["stage"]["id"] != stage_id or hosted_status["stage"]["state"] != "published" or hosted_status["stage"]["manifest_digest"] != hosted_proof["manifest_digest"]:
                 raise RuntimeError("Hosted CLI status did not return the promoted manifest")
@@ -128,6 +138,34 @@ def main():
             if promotion["manifest_digest"] != hosted_proof["manifest_digest"] or promotion["actor"] != "promoter" or {item["path"]:item["subject"] for item in promotion["files"]} != expected_files or any(not item["evidence"] or len(item["configuration"]) != 64 for item in promotion["files"]):
                 raise RuntimeError("Hosted CLI status did not preserve the promotion evidence receipt")
             hosted_proof["cli_status"] = "passed"
+            source_proof = hosted_proof
+            # Stop analysis so a copied sealed target must demonstrate missing target evidence.
+            compose("stop","worker")
+            target_id = str(uuid.uuid4())
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-denied",stage_id,target_id,log_name="copy-role-checks.log")
+            copy_log = compose("exec","-T","--env","PACKWEIR_SERVICE_TOKEN=fixture-copy-token-000000000000000000","gateway","packweir","--config","/app/e2e.toml","hosted","copy",stage_id,"maven-prod","--source-manifest",source_proof["manifest_digest"],"--id",target_id,log_name="hosted-copy.log")
+            copy_receipt = json.loads(copy_log)
+            if copy_receipt["source_stage"] != stage_id or copy_receipt["source_manifest_digest"] != source_proof["manifest_digest"] or copy_receipt["destination"]["stage"]["id"] != target_id or copy_receipt["destination"]["stage"]["state"] != "sealed":
+                raise RuntimeError("Hosted copy CLI did not bind the source and sealed production manifest")
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-pending",stage_id,target_id,log_name="copy-pending.log")
+            compose("up","-d","--no-deps","worker")
+            target_log = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-promote",stage_id,target_id,log_name="production-promote.log")
+            hosted_proof = json.loads(re.search(r"PACKWEIR_CROSS_PROOF=(.+)", target_log).group(1))
+            hosted_proof["source"] = source_proof
+            hosted_proof["publisher"] = source_proof["publisher"]
+            hosted_status_log = compose("exec","-T","--env","PACKWEIR_SERVICE_TOKEN=fixture-prod-promote-token-0000000000","gateway","packweir","--config","/app/e2e.toml","hosted","status",target_id,log_name="hosted-status.log")
+            hosted_status = json.loads(hosted_status_log)
+            promotion = hosted_status["promotion"]
+            expected_files = {item["path"]:item["sha256"] for item in hosted_proof["files"]}
+            if hosted_status["stage"]["id"] != target_id or hosted_status["stage"]["state"] != "published" or promotion["actor"] != "prod-promoter" or promotion["manifest_digest"] != hosted_proof["manifest_digest"] or {item["path"]:item["subject"] for item in promotion["files"]} != expected_files:
+                raise RuntimeError("Production CLI status did not preserve independently approved file bindings")
+            expected_lineage = dict(copy_receipt, destination=dict(copy_receipt["destination"], stage=hosted_status["stage"]))
+            if hosted_status["copy"] != expected_lineage or any("evidence" in item or "policy" in item for item in hosted_status["copy"]["source_files"]):
+                raise RuntimeError("Production CLI copy lineage differs or exposes private source reports")
+            hosted_proof["cli_copy"] = "passed"
+            hosted_proof["cli_status"] = "passed"
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-revoke-source",stage_id,target_id,log_name="source-revoke.log")
+            hosted_proof["source_revocation_independence"] = "passed"
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","explain",explain_digest,"--repository","npm",log_name="explain.log")
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","status",log_name="operations.log")
             clients = {}
@@ -139,7 +177,7 @@ def main():
                 clients[name] = {"status":"passed", "version_output":version.group(1), "log":f"{name}.log"}
                 print(f"{storage}: {name} passed", flush=True)
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","verify")
-            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-revoke",stage_id,log_name="hosted-revoke.log")
+            compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-revoke-target",stage_id,target_id,log_name="hosted-revoke.log")
             hosted_proof["revocation"] = "passed"
             (output/"hosted-report.json").write_text(json.dumps(hosted_proof,indent=2))
             compose("stop","upstream")

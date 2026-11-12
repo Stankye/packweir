@@ -1,6 +1,7 @@
 """Frontend-only policy, byte-integrity, and topology assertions."""
 import hashlib
 import base64
+import datetime
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,15 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 BASE = "http://gateway:8080"
 READ = os.environ["PACKWEIR_READ_TOKEN"]
 ADMIN = os.environ.get("PACKWEIR_ADMIN_TOKEN", "")
 PUBLISH = os.environ.get("PACKWEIR_PUBLISH_TOKEN", "")
 PROMOTE = os.environ.get("PACKWEIR_PROMOTE_TOKEN", "")
+COPY = os.environ.get("PACKWEIR_COPY_TOKEN", "")
+PROD_PROMOTE = os.environ.get("PACKWEIR_PROD_PROMOTE_TOKEN", "")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -45,18 +49,18 @@ def basic(token):
     return {"Authorization": "Basic " + base64.b64encode(("publisher:" + token).encode()).decode()}
 
 
-def stage_info(stage_id):
-    status, body, _ = request("/api/v1/staging/" + stage_id, token=PUBLISH)
+def stage_info(stage_id, token=PUBLISH):
+    status, body, _ = request("/api/v1/staging/" + stage_id, token=token)
     assert status == 200, (status, body)
     return json.loads(body)
 
 
-def assert_hosted_hidden():
+def assert_hosted_hidden(repository="maven-local"):
     for path in [HOSTED_PREFIX + extension for extension in [".jar", ".pom", ".jar.sha1", ".jar.sha256", ".jar.md5"]] + [HOSTED_ROOT + "/maven-metadata.xml"]:
         for method in ["GET", "HEAD"]:
-            status, body, _ = request(HOSTED_PUBLIC + path, method=method)
+            status, body, _ = request("/r/" + repository + "/" + path, method=method)
             assert status == 404, (path, method, status, body)
-        status, body, _ = request(HOSTED_PUBLIC + path, headers={"Range":"bytes=0-3"})
+        status, body, _ = request("/r/" + repository + "/" + path, headers={"Range":"bytes=0-3"})
         assert status == 404, (path, status, body)
 
 
@@ -159,8 +163,134 @@ def hosted(phase, stage_id):
     print(f"probe {phase}: passed", flush=True)
 
 
+def inspect_delivery(digest, repository):
+    status, body, _ = request(f"/api/v1/artifacts/{digest}?repository={repository}", token=ADMIN)
+    assert status == 200, (status, body)
+    report = json.loads(body)
+    assert len(report["scopes"]) == 1 and report["scopes"][0]["scope"]["repository"] == repository, report
+    return report
+
+
+def production_bytes(info):
+    files = []
+    for item in info["files"]:
+        status, content, _ = request("/r/maven-prod/" + item["path"])
+        assert status == 200 and hashlib.sha256(content).hexdigest() == item["artifact"]["digest"], (status, content)
+        if item["path"].endswith(".jar"):
+            assert content == Path("/fixtures/java/library.jar").read_bytes()
+        for algorithm in ["md5", "sha1", "sha256", "sha512"]:
+            status, digest, _ = request("/r/maven-prod/" + item["path"] + "." + algorithm)
+            assert status == 200 and digest.decode().strip() == hashlib.new(algorithm, content).hexdigest(), (status, digest)
+        files.append({"path":item["path"], "sha256":hashlib.sha256(content).hexdigest()})
+    status, metadata, _ = request("/r/maven-prod/" + HOSTED_ROOT + "/maven-metadata.xml")
+    assert status == 200 and b"<version>1.0.0</version>" in metadata and b"SNAPSHOT" not in metadata, (status, metadata)
+    status, digest, _ = request("/r/maven-prod/" + HOSTED_ROOT + "/maven-metadata.xml.sha256")
+    assert status == 200 and digest.decode().strip() == hashlib.sha256(metadata).hexdigest(), (status, digest)
+    return files
+
+
+def cross(phase, source_id, target_id):
+    source_url, target_url = "/api/v1/staging/" + source_id, "/api/v1/staging/" + target_id
+    source = stage_info(source_id)
+    payload = {"id":target_id, "destination_repository":"maven-prod", "source_manifest_digest":source["stage"]["manifest_digest"]}
+    if phase == "cross-denied":
+        assert source["stage"]["state"] == "published", source
+        for token in [READ, PUBLISH, PROMOTE, PROD_PROMOTE]:
+            status, body, _ = request(source_url + "/copy", token=token, data=payload)
+            assert status == 403, (status, body)
+        assert_hosted_hidden("maven-prod")
+    elif phase == "cross-pending":
+        target = stage_info(target_id, COPY)
+        assert target["stage"]["state"] == "sealed" and target["promotion"] is None, target
+        assert target["stage"]["package"] == source["stage"]["package"], target
+        lineage = target["copy"]
+        assert lineage["source_stage"] == source_id and lineage["source_repository"] == "maven-local" and lineage["source_manifest_digest"] == payload["source_manifest_digest"] and lineage["actor"] == "copier", lineage
+        assert lineage["destination"]["stage"]["id"] == target_id, lineage
+        assert lineage["destination"]["manifest_digest"] != payload["source_manifest_digest"], lineage
+        source_files = {item["path"]:item["artifact"] for item in source["files"]}
+        copied_sources = {item["path"]:item for item in lineage["source_files"]}
+        assert set(source_files) == {item["path"] for item in target["files"]}, target
+        for item in target["files"]:
+            original, summary = source_files[item["path"]], copied_sources[item["path"]]
+            assert item["artifact"]["digest"] == original["digest"] == summary["subject"], item
+            assert item["artifact"]["origin"] == BASE + "/r/maven-prod/" + item["path"], item
+            assert item["artifact"]["origin"] != original["origin"], item
+            assert summary["evidence_ids"] and len(summary["evidence_digest"]) == 64, summary
+            assert "policy" not in summary and "evidence" not in summary, summary
+            report = inspect_delivery(item["artifact"]["digest"], "maven-prod")
+            assert report["decision"]["state"] == "pending" and not report["evidence"], report
+            assert report["configuration"] != summary["configuration"], report
+            assert "fixture_review" in report["scopes"][0]["policy"]["policy"]["required"], report
+        for token in [READ, PUBLISH, PROMOTE, COPY, PROD_PROMOTE]:
+            assert request(target_url + "/copy-evidence", token=token)[0] == 401
+        status, full, _ = request(target_url + "/copy-evidence", token=ADMIN)
+        assert status == 200 and all(item["evidence"] for item in json.loads(full)["source_files"]), (status, full)
+        status, replay, _ = request(source_url + "/copy", token=COPY, data=payload)
+        assert status == 201 and json.loads(replay) == lineage, (status, replay)
+        for token in [READ, PUBLISH, PROMOTE, COPY]:
+            assert request(target_url + "/promote", token=token, data={"manifest_digest":target["stage"]["manifest_digest"]})[0] == 403
+        status, body, _ = request(target_url + "/promote", token=PROD_PROMOTE, data={"manifest_digest":target["stage"]["manifest_digest"]})
+        assert status == 409 and json.loads(body)["error"] == "release_not_approved", (status, body)
+        for item in target["files"]:
+            assert not inspect_delivery(item["artifact"]["digest"], "maven-prod")["evidence"]
+        assert_hosted_hidden("maven-prod")
+    elif phase == "cross-promote":
+        target = stage_info(target_id, COPY)
+        manifest = target["stage"]["manifest_digest"]
+        deadline = time.monotonic() + 120
+        while True:
+            status, body, _ = request(target_url + "/promote", token=PROD_PROMOTE, data={"manifest_digest":manifest})
+            if status == 200:
+                break
+            assert status == 409 and json.loads(body)["error"] == "release_not_approved", (status, body)
+            if time.monotonic() > deadline:
+                raise AssertionError(("fresh production review timed out", stage_info(target_id, COPY)))
+            time.sleep(0.25)
+        target = stage_info(target_id, COPY)
+        sources = {item["path"]:item for item in target["copy"]["source_files"]}
+        source_ids = {identifier for item in sources.values() for identifier in item["evidence_ids"]}
+        assert target["promotion"]["actor"] == "prod-promoter", target
+        for item in target["promotion"]["files"]:
+            assert item["configuration"] != sources[item["path"]]["configuration"], item
+            assert "fixture_review" in item["policy"]["policy"]["required"], item
+            assert not source_ids.intersection(entry["id"] for entry in item["evidence"]), item
+            review = [entry["document"] for entry in item["evidence"] if entry["document"]["check"] == "fixture_review"]
+            assert len(review) == 1, item
+            review = review[0]
+            assert review["outcome"] == "pass" and review["configuration"] == item["configuration"] and review["subject"] == item["subject"], review
+            assert review["details"]["fixture_only"] is True and review["details"]["production_scope_matched"] is True, review
+            assert review["details"]["binding_subject"] == item["subject"] and review["details"]["binding_configuration"] == item["configuration"], review
+            assert datetime.datetime.fromisoformat(review["created_at"].replace("Z", "+00:00")) >= datetime.datetime.fromisoformat(target["copy"]["created_at"].replace("Z", "+00:00")), review
+        proof = {"source_stage_id":source_id, "source_repository":"maven-local", "source_manifest_digest":payload["source_manifest_digest"], "stage_id":target_id, "repository":"maven-prod", "manifest_digest":manifest,
+                 "coordinate":"dev.packweir.private:hosted-fixture:1.0.0", "files":production_bytes(target), "same_bytes":"passed", "fresh_destination_evidence":"passed", "stronger_policy":"passed", "review_adapter":"qualification_fixture_only",
+                 "copy_roles":"passed", "source_evidence_privacy":"passed", "copy_replay":"passed", "quarantine":"passed", "pending_promotion":"passed", "role_separation":"passed", "namespace_reservation":"passed", "immutable_uploads":"passed", "checksum_algorithms":["md5","sha1","sha256","sha512"], "snapshots":"explicitly_rejected"}
+        print("PACKWEIR_CROSS_PROOF=" + json.dumps(proof, separators=(",", ":")), flush=True)
+    elif phase == "cross-revoke-source":
+        status, body, _ = request(source_url + "/revoke", token=PROMOTE, data={"manifest_digest":payload["source_manifest_digest"]})
+        assert status == 200, (status, body)
+        assert_hosted_hidden("maven-local")
+        production_bytes(stage_info(target_id, COPY))
+        status, body, _ = request(source_url + "/copy", token=COPY, data=dict(payload, id=str(uuid.uuid4())))
+        assert status == 409, (status, body)
+    elif phase == "cross-revoke-target":
+        target = stage_info(target_id, COPY)
+        assert request(target_url + "/revoke", token=COPY, data={"manifest_digest":target["stage"]["manifest_digest"]})[0] == 403
+        status, body, _ = request(target_url + "/revoke", token=PROD_PROMOTE, data={"manifest_digest":target["stage"]["manifest_digest"]})
+        assert status == 200, (status, body)
+        assert_hosted_hidden("maven-local")
+        assert_hosted_hidden("maven-prod")
+        events = [json.loads(line) for line in Path("/fixtures/requests.jsonl").read_text().splitlines()]
+        assert not any(event["path"].startswith("/maven/dev/packweir/private/") for event in events), events
+    else:
+        raise AssertionError("unknown cross-repository phase")
+    print(f"probe {phase}: passed", flush=True)
+
+
 def main():
     phase = sys.argv[1]
+    if phase.startswith("cross-"):
+        cross(phase, sys.argv[2], sys.argv[3])
+        return
     if phase.startswith("hosted-"):
         hosted(phase, sys.argv[2])
         return
