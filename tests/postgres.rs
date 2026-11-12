@@ -374,10 +374,15 @@ async fn migration_preserves_legacy_blobs_but_requires_new_delivery_approval(poo
     let origin = "http://127.0.0.1:1/pkg/-/pkg-1.0.tgz";
     sqlx::query("INSERT INTO artifacts(repository,origin,digest,size,filename,content_type) VALUES('npm',$1,$2,$3,'pkg-1.0.tgz','application/octet-stream')")
         .bind(origin).bind(&digest).bind(bytes.len() as i64).execute(&store.pool).await.unwrap();
-    store
-        .enqueue(&digest, "legacy-deployment", "pkg-1.0.tgz")
+    // Seed the actual version-1 format. Current Store methods intentionally
+    // require all current migrations and cannot operate against this old schema.
+    sqlx::query("INSERT INTO contexts(subject) VALUES($1)")
+        .bind(&digest)
+        .execute(&store.pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO jobs(id,subject,configuration,filename,context_revision) VALUES($1,$2,'legacy-deployment','pkg-1.0.tgz',0)")
+        .bind(uuid::Uuid::new_v4()).bind(&digest).execute(&store.pool).await.unwrap();
     sqlx::migrate!().run(&store.pool).await.unwrap();
     assert!(
         store

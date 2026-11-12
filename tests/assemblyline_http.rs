@@ -655,8 +655,22 @@ async fn cli_worker_defers_without_spending_retries_and_resumes_one_submission(p
     );
     assert_eq!(captured["params"]["ignore_cache"], false);
     assert_eq!(*harness.server.state.uploaded.lock().unwrap(), ROOT_BYTES);
-    // An immediate worker restart respects not_before and performs no HTTP work.
+    // Make eligibility explicit: process startup can outlast a short poll
+    // interval, particularly when this suite runs many worker processes at once.
+    sqlx::query("UPDATE jobs SET not_before=clock_timestamp()+interval '5 minutes' WHERE subject=$1 AND configuration=$2")
+        .bind(&harness.artifact.digest).bind(&harness.configuration).execute(&harness.store.pool).await.unwrap();
+    sqlx::query("UPDATE remote_analysis SET next_poll_at=clock_timestamp()+interval '5 minutes' WHERE subject=$1 AND configuration=$2")
+        .bind(&harness.artifact.digest).bind(&harness.configuration).execute(&harness.store.pool).await.unwrap();
+    let requests_before_restart = harness.server.state.requests.lock().unwrap().len();
     harness.worker().await;
+    let deferred = harness.job().await;
+    assert_eq!(deferred.get::<String, _>("state"), "queued");
+    assert_eq!(deferred.get::<i32, _>("attempts"), 0);
+    assert_eq!(
+        harness.server.state.requests.lock().unwrap().len(),
+        requests_before_restart
+    );
+    assert_eq!(harness.server.state.posts.load(Ordering::SeqCst), 1);
     assert_eq!(harness.server.state.polls.load(Ordering::SeqCst), 0);
     harness.due().await;
     harness.worker().await;
