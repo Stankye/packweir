@@ -1,0 +1,7 @@
+# Official PyPI yara-python 4.5.4 manylinux x86_64 wheels for CPython 3.10-3.13.
+# The native YARA engine is statically linked by upstream.
+yara-python==4.5.4 \
+    --hash=sha256:7e20e1f69b6239fe4f4da97e9ff361d9be25d6f1d747589ea44b8a9ec412a12d \
+    --hash=sha256:1a1721b61ee4e625a143e8e5bf32fa6774797c06724c45067f3e8919a8e5f8f3 \
+    --hash=sha256:e5eae935b05a9f8dc71df55a79c38f52abd93f8840310fe4e0d75fbd78284f24 \
+    --hash=sha256:9d9a58b7dc87411a2443d2e0382a111bd892aef9f6db2a1ebb4a9215eef0db71

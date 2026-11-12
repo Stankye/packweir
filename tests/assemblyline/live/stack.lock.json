@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-11-11",
+  "scope": "Real Assemblyline v4.7.4.stable11 loopback-only qualification stack",
+  "documentation": [
+    "https://cybercentrecanada.github.io/assemblyline4_docs/installation/appliance/docker/",
+    "https://github.com/CybercentreCanada/assemblyline-docker-compose/blob/61219fb8b99774c48cbe400d47b16a6f4314be95/docker-compose.yaml"
+  ],
+  "sources": {
+    "assemblyline-docker-compose": "61219fb8b99774c48cbe400d47b16a6f4314be95",
+    "assemblyline-base": "abb23625186247802c1f0376a5c79a567120f78d",
+    "assemblyline-ui": "844ccb3f2d53214c8822a46e782b06bc3ef2581d",
+    "assemblyline-core": "ae998ce18b6d8605d1013f3e9c65e4988beb701a",
+    "assemblyline-rust": "09acf16e049f2b09dd0ddc62d665e329e95550ba",
+    "assemblyline-v4-service": "f30da537e3adbee7c5c46e694a1ee15c4dc1cb87",
+    "assemblyline-service-extract": "60c23f4db2a349ea3b3b28e304326cd13893976e"
+  },
+  "images": {
+    "UI_IMAGE": "cccs/assemblyline-ui:4.7.4.stable11@sha256:a7ac06879bc3be83e65c2ab3292f62dbce535581bde982323d95a22129439609",
+    "CORE_IMAGE": "cccs/assemblyline-core:4.7.4.stable11@sha256:9c8a0be3b1fed333a5d358bdb8626e8929fab596907f39a634fedaa1af795b3a",
+    "RUST_IMAGE": "cccs/assemblyline-rust:4.7.4.stable11@sha256:e8e3189b9b25b5d249d7288647ca45e5474681e5aa9e9dbe34283f61afdd6a50",
+    "SERVICE_BASE_IMAGE": "cccs/assemblyline-v4-service-base:4.7.4.stable11@sha256:ed471817fee053dac2e2d73ccbb79b2ee6edc44030725d3e74b5c5a825d4534c",
+    "EXTRACT_IMAGE": "cccs/assemblyline-service-extract:4.7.0.stable10@sha256:ca883b4eac6bf6226746b9299c75e14c53fa0002c4988af50bf48210a015382b",
+    "ELASTICSEARCH_IMAGE": "docker.elastic.co/elasticsearch/elasticsearch:8.10.2@sha256:d118fc05cfa714a4577731384ec8b08fe7e70c203a6949b0581e0f6ebe54b0af",
+    "REDIS_IMAGE": "redis:7.2.12-bookworm@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c",
+    "MINIO_IMAGE": "cccs/minio@sha256:68eefa6a5ccd82178a872b2d1012687d0ac9b1afa848a1e56f55fa5f1efcb081"
+  },
+  "memory_limit_mib": 4864,
+  "bootstrap_peak_memory_limit_mib": 5376
+}

@@ -15,6 +15,11 @@ Service/configuration values are controlled test inputs. They cannot establish
 that an operator's service performs a particular check or that a deployment is
 qualified. No credentials, private samples, or external instance were used.
 
+The separate [live qualification suite](live/README.md) starts the real pinned
+appliance and services and preserves authenticated captures. Its installed UI
+reports `4.7.4.11` for the reviewed `4.7.4.stable11` image. Configure the version
+actually returned by your instance; the tag spelling is not the wire version.
+
 ## Requests, envelopes, and credentials
 
 Use an operator-configured HTTPS destination with `X-USER`, `X-APIKEY`, and

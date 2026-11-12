@@ -384,6 +384,7 @@ pub async fn advance(
     name: &str,
     config: &AssemblylineConfig,
     bytes: &[u8],
+    bundle: &Value,
     evidence_digest: &str,
 ) -> Result<Step> {
     config.validate()?;
@@ -391,6 +392,12 @@ pub async fn advance(
         sha256(bytes) == job.subject,
         "Assemblyline artifact digest mismatch"
     );
+    ensure!(
+        sha256(&serde_json::to_vec(bundle)?) == evidence_digest,
+        "Assemblyline evidence bundle digest differs"
+    );
+    let local_inventory =
+        crate::analysis_coverage::LocalInventory::from_bundle(&job.subject, bytes.len(), bundle)?;
     let profile = config.fingerprint();
     let binding = Binding {
         check_name: name.into(),
@@ -533,6 +540,7 @@ pub async fn advance(
                         &config.policy,
                         Utc::now(),
                     )?;
+                    local_inventory.reconcile(&mut output, config.policy.allow_empty_files)?;
                     output.valid_until = Some(
                         output
                             .valid_until
@@ -657,9 +665,9 @@ fn verify_submission(
     );
     for list in ["excluded", "rescan", "resubmit"] {
         ensure!(
-            params["services"][list]
-                .as_array()
-                .is_some_and(Vec::is_empty),
+            params["services"]
+                .get(list)
+                .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty)),
             "remote service exclusions or resubmissions differ"
         );
     }

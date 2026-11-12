@@ -1,0 +1,28 @@
+# Derived from CybercentreCanada/assemblyline-docker-compose config/config.yml.
+# Values in braces are substituted into the ignored run directory by stack.py.
+core:
+  metrics:
+    elasticsearch:
+      hosts: ["http://elastic:{ELASTIC_PASSWORD}@elasticsearch:9200"]
+    redis: {host: redis, port: 6379}
+  redis:
+    nonpersistent: {host: redis, port: 6379}
+    persistent: {host: redis, port: 6379}
+  updater:
+    auto_install: []
+datastore:
+  hosts: ["http://elastic:{ELASTIC_PASSWORD}@elasticsearch:9200"]
+filestore:
+  archive: ["s3://al_storage_key:{FILESTORE_PASSWORD}@minio:9000?s3_bucket=al-archive&use_ssl=False"]
+  cache: ["s3://al_storage_key:{FILESTORE_PASSWORD}@minio:9000?s3_bucket=al-cache&use_ssl=False"]
+  storage: ["s3://al_storage_key:{FILESTORE_PASSWORD}@minio:9000?s3_bucket=al-storage&use_ssl=False"]
+logging:
+  log_level: INFO
+  log_to_console: true
+  log_to_file: false
+  log_to_syslog: false
+ui:
+  enforce_quota: false
+  secret_key: "{FLASK_SECRET}"
+submission:
+  file_sources: []

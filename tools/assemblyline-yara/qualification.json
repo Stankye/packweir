@@ -1,0 +1,11 @@
+{
+  "services": ["Extract", "PackweirYARA"],
+  "service_spec": {"Extract": {"continue_after_extract": true}},
+  "applies_to": {"Extract": ["archive/zip"], "PackweirYARA": []},
+  "allow_empty_files": true,
+  "tool_version_pattern": "^yara-python/4\\.5\\.4\\.yara/4\\.5\\.4\\.rules/[a-f0-9]{64}\\.driver/[a-f0-9]{64}$",
+  "informational_rules": [{"service": "Extract", "heuristic_id": "EXTRACT.1", "signature": null}],
+  "deny_rules": [{"service": "PackweirYARA", "heuristic_id": "PACKWEIRYARA.1", "signature": "PackweirQualificationMarker"}],
+  "benign_text": "Packweir real Assemblyline qualification benign text.\n",
+  "marker_text": "PACKWEIR_ASSEMBLYLINE_HARMLESS_MARKER_V1\n"
+}

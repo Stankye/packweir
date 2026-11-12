@@ -6,7 +6,7 @@ Packweir separates artifact identity, verified signatures/provenance, source pos
 
 In addition to the Sigstore driver below, [native SLSA, OSV, and Hipcheck drivers](native-drivers.md) now implement explicit source/package mappings, exact source-revision checks, pinned offline advisory snapshots, plugin-binary pins, and evidence expiry. Their documented coverage is narrower than each upstream tool's full feature set.
 
-An experimental [Assemblyline v4 client](assemblyline.md) adds durable remote submission/polling and conservative per-service/file normalization. It uses a separate `remote_scanners` configuration map, and requires operator-qualified instance/service/profile pins. Tests cover upstream-generated schema examples and a controlled HTTP instance; live deployment qualification is still required.
+An experimental [Assemblyline v4 client](assemblyline.md) adds durable remote submission/polling, pinned applicable-service coverage, and reconciliation with the gateway's own inventory. It uses a separate `remote_scanners` configuration map and requires operator-qualified instance/service/profile pins. A reproducible live suite exercises the actual pinned appliance, official Extract service, and native YARA with harmless inputs. This covers one isolated profile; additional services, detection rules, and operator deployments need their own qualification.
 
 The built-in Sigstore driver invokes an operator-installed, SHA-256-pinned Cosign executable. It supports keyless **blob signatures in Sigstore v0.3 bundles**, with an exact certificate identity and OIDC issuer, a pinned local trust root, and a required transparency inclusion proof. Cosign performs the cryptographic verification. Qualification currently covers Cosign 3.1.4; other versions require validation.
 
@@ -95,7 +95,7 @@ OSV-Scanner and SLSA Verifier have built-in drivers; the other integrations belo
 | [OpenSSF Package Analysis](https://github.com/ossf/package-analysis) | Behavioral investigation in an isolated execution environment, with install/runtime traces and bounded network/resource policy. |
 | [GUAC](https://github.com/guacsec/guac) | Optional graph exchange for artifact, dependency, vulnerability, and attestation relationships. Retain statement origin and verification status; imported relationships do not confer trust. PostgreSQL remains Packweir's decision/job store. |
 
-Next work should broaden automatic identity/provenance discovery, add remaining OSSGadget helpers and license workflows, qualify Assemblyline services on a live deployment, and integrate binary helpers with the same attributable evidence. [Conditional agent scheduling](agent-escalation.md) is implemented; model/provider-specific adapters remain operator-provided. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
+Next work should broaden automatic identity/provenance discovery, add remaining OSSGadget helpers and license workflows, qualify additional Assemblyline services and detection content, and integrate binary helpers with the same attributable evidence. [Conditional agent scheduling](agent-escalation.md) is implemented; model/provider-specific adapters remain operator-provided. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
 
 ## Validation
 

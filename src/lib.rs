@@ -1,4 +1,5 @@
 pub mod access;
+pub mod analysis_coverage;
 pub mod assemblyline;
 pub mod assemblyline_http;
 pub mod bounds;

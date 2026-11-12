@@ -456,6 +456,7 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
                 name,
                 remote.assemblyline(),
                 &bytes,
+                &bundle,
                 &bundle_digest,
             ))
             .await?

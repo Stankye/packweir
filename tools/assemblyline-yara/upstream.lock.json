@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "assemblyline_sdk": {
+    "repository": "https://github.com/CybercentreCanada/assemblyline-v4-service",
+    "tag": "v4.7.4.stable11",
+    "commit": "f30da537e3adbee7c5c46e694a1ee15c4dc1cb87",
+    "service_base_image": "cccs/assemblyline-v4-service-base@sha256:ed471817fee053dac2e2d73ccbb79b2ee6edc44030725d3e74b5c5a825d4534c"
+  },
+  "yara_python": {
+    "repository": "https://github.com/VirusTotal/yara-python",
+    "tag": "v4.5.4",
+    "commit": "74920b6da9a70a162b3bdc41b30e4af02e5c7dff",
+    "release_metadata": "https://pypi.org/pypi/yara-python/4.5.4/json",
+    "version": "4.5.4",
+    "artifact_hashes": "requirements.lock",
+    "license_file": "licenses/yara-python-LICENSE",
+    "license_sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08"
+  },
+  "native_yara": {
+    "repository": "https://github.com/VirusTotal/yara",
+    "tag": "v4.5.4",
+    "commit": "7ff39042be5c63682a037e13a75221d59393cf8b",
+    "version": "4.5.4",
+    "distribution": "statically linked into the official hash-locked yara-python wheels",
+    "license_file": "licenses/YARA-COPYING",
+    "license_sha256": "efdabc1c1f655528b8c3a59b03668d446746d87273fab76f8af800b6e8891bd2"
+  },
+  "scope": "Source and dependency pins. Live deployment qualification requires the separate real-instance harness. The bundled YARA rule detects only a harmless integration marker."
+}

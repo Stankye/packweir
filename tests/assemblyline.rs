@@ -29,9 +29,12 @@ fn policy() -> AssemblylinePolicy {
                 version: "4.7.4.11".into(),
                 tool_version: Some("fixture-rules-2026-11".into()),
                 configuration_key: "PinnedFixture1".into(),
+                applies_to: vec![],
             },
         )]),
         deny_rules: vec![],
+        informational_rules: vec![],
+        allow_empty_files: false,
         max_result_age_seconds: 86400,
     }
 }
@@ -94,6 +97,18 @@ fn add_child(report: &mut Value, tree: &mut Value, analyze_child: bool) {
     if analyze_child {
         report["results"][key(&child)] = service_result(&child);
     }
+}
+
+fn add_empty_child(report: &mut Value, tree: &mut Value) {
+    let empty = sha256(b"");
+    report["results"][key(&root())]["response"]["extracted"].as_array_mut().unwrap().push(json!({
+        "sha256":empty,"name":"__init__.py","description":"empty fixture","classification":"U","parent_relation":"EXTRACTED"}));
+    let mut empty_node = node(&empty, json!({}));
+    empty_node["size"] = json!(0);
+    empty_node["type"] = json!("empty");
+    tree["tree"][root()]["children"][empty.clone()] = empty_node;
+    report["file_tree"] = tree["tree"].clone();
+    report["file_infos"][empty.clone()] = json!({"sha256":empty,"size":0,"type":"empty"});
 }
 
 #[test]
@@ -296,6 +311,30 @@ fn stale_future_or_expired_results_cannot_pass_and_upstream_expiry_caps_evidence
 }
 
 #[test]
+fn new_record_creation_cannot_refresh_old_execution_and_completion_caps_validity() {
+    let (mut report, tree) = fixture();
+    report["results"][key(&root())]["response"]["milestones"] = json!({
+        "service_started":"2026-11-09T10:00:00Z","service_completed":"2026-11-09T11:00:00Z"});
+    assert_eq!(
+        normalize(&report, &tree, &policy()).outcome,
+        Outcome::Inconclusive
+    );
+    report["results"][key(&root())]["response"]["milestones"] = json!({
+        "service_started":"2026-11-11T11:20:00Z","service_completed":"2026-11-11T11:30:00Z"});
+    let output = normalize(&report, &tree, &policy());
+    assert_eq!(output.outcome, Outcome::Pass);
+    assert_eq!(
+        output.valid_until,
+        Some("2026-11-12T11:30:00Z".parse().unwrap())
+    );
+    report["results"][key(&root())]["expiry_ts"] = json!("2026-11-11T12:30:00Z");
+    assert_eq!(
+        normalize(&report, &tree, &policy()).valid_until,
+        Some("2026-11-11T12:30:00Z".parse().unwrap())
+    );
+}
+
+#[test]
 fn synthesized_empty_cache_results_cannot_prove_fresh_pinned_service_execution() {
     let (mut report, tree) = fixture();
     let mut result = report["results"]
@@ -405,9 +444,12 @@ fn actual_pinned_upstream_odm_shapes_normalize_complete_errors_and_synthetic_emp
                     .strip_prefix('c')
                     .unwrap()
                     .into(),
+                applies_to: vec![],
             },
         )]),
         deny_rules: vec![],
+        informational_rules: vec![],
+        allow_empty_files: false,
         max_result_age_seconds: 86400,
     };
     let at = manifest["now"].as_str().unwrap().parse().unwrap();
@@ -484,4 +526,341 @@ fn selected_configuration_and_service_milestones_are_required() {
         normalize(&report, &tree, &policy()).outcome,
         Outcome::Inconclusive
     );
+}
+
+#[test]
+fn explicit_applicability_preserves_skips_and_requires_other_coverage() {
+    let (mut report, mut tree) = fixture();
+    add_child(&mut report, &mut tree, false);
+    report["file_infos"][root()]["type"] = json!("archive/zip");
+    report["file_infos"][child()]["type"] = json!("text/plain");
+    let mut policy = policy();
+    policy
+        .required_services
+        .get_mut("StaticFixture")
+        .unwrap()
+        .applies_to = vec!["archive/zip".into()];
+    let uncovered = normalize(&report, &tree, &policy);
+    assert_eq!(uncovered.outcome, Outcome::Inconclusive);
+    assert!(
+        uncovered.details["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["sha256"] == child() && row["status"] == "not_applicable" })
+    );
+    let mut text_pin = policy.required_services["StaticFixture"].clone();
+    text_pin.applies_to = vec!["text/".into()];
+    policy
+        .required_services
+        .insert("TextFixture".into(), text_pin);
+    report["params"]["services"]["selected"] = json!(["StaticFixture", "TextFixture"]);
+    let mut result = service_result(&child());
+    result["response"]["service_name"] = json!("TextFixture");
+    report["results"][format!("{}.TextFixture.v4_7_4_11.cPinnedFixture1", child())] = result;
+    assert_eq!(normalize(&report, &tree, &policy).outcome, Outcome::Pass);
+
+    for missing_type in [Value::Null, json!(""), json!(17)] {
+        let mut report = report.clone();
+        report["file_infos"][child()]["type"] = missing_type;
+        assert_eq!(
+            normalize(&report, &tree, &policy).outcome,
+            Outcome::Inconclusive
+        );
+    }
+    report["file_infos"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&child());
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+}
+
+#[test]
+fn legacy_all_files_scope_does_not_depend_on_new_type_metadata() {
+    let (mut report, tree) = fixture();
+    report["file_infos"][root()]
+        .as_object_mut()
+        .unwrap()
+        .remove("type");
+    assert_eq!(normalize(&report, &tree, &policy()).outcome, Outcome::Pass);
+    let mut scoped = policy();
+    scoped
+        .required_services
+        .get_mut("StaticFixture")
+        .unwrap()
+        .applies_to = vec!["archive/".into()];
+    assert_eq!(
+        normalize(&report, &tree, &scoped).outcome,
+        Outcome::Inconclusive
+    );
+}
+
+#[test]
+fn nonapplicable_empty_cache_is_visible_without_fabricating_fresh_coverage() {
+    let (mut report, tree) = fixture();
+    report["file_infos"][root()]["type"] = json!("text/plain");
+    let mut policy = policy();
+    let mut pin = policy.required_services["StaticFixture"].clone();
+    pin.applies_to = vec!["archive/zip".into()];
+    policy
+        .required_services
+        .insert("ExtractFixture".into(), pin);
+    report["params"]["services"]["selected"] = json!(["StaticFixture", "ExtractFixture"]);
+    let mut empty = service_result(&root());
+    empty["response"]["service_name"] = json!("ExtractFixture");
+    empty["response"]["service_version"] = json!("4_7_4_11");
+    empty["response"]["service_tool_version"] = Value::Null;
+    empty["created"] = json!("2026-11-09T00:00:00Z");
+    report["results"][format!("{}.ExtractFixture.v4_7_4_11.cPinnedFixture1.e", root())] = empty;
+    let output = normalize(&report, &tree, &policy);
+    assert_eq!(output.outcome, Outcome::Pass);
+    let scope = output.details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["service"] == "ExtractFixture")
+        .unwrap();
+    assert_eq!(scope["status"], "not_applicable");
+    assert_eq!(scope["results"][0]["fresh"], false);
+    policy
+        .required_services
+        .get_mut("ExtractFixture")
+        .unwrap()
+        .applies_to
+        .clear();
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+}
+
+#[test]
+fn only_explicit_zero_score_observations_can_be_informational_and_denials_win() {
+    let (mut report, tree) = fixture();
+    finding(&mut report);
+    let mut policy = policy();
+    policy.informational_rules = deny_policy().deny_rules;
+    let output = normalize(&report, &tree, &policy);
+    assert_eq!(output.outcome, Outcome::Pass);
+    assert_eq!(
+        output.details["findings"][0]["disposition"],
+        "informational"
+    );
+    assert_eq!(
+        output.details["findings"][0]["informational_rule_indices"],
+        json!([0])
+    );
+    for score in [1, -1, 500] {
+        let mut report = report.clone();
+        report["results"][key(&root())]["result"]["sections"][0]["heuristic"]["score"] =
+            json!(score);
+        assert_eq!(
+            normalize(&report, &tree, &policy).outcome,
+            Outcome::Inconclusive
+        );
+    }
+    for field in ["result", "platform"] {
+        let mut report = report.clone();
+        if field == "result" {
+            report["results"][key(&root())]["result"]["score"] = json!(100);
+        } else {
+            report["max_score"] = json!(100);
+        }
+        assert_eq!(
+            normalize(&report, &tree, &policy).outcome,
+            Outcome::Inconclusive
+        );
+    }
+    report["results"][key(&root())]["result"]["sections"][0]["heuristic"]["signature"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"unacknowledged", "safe":false, "frequency":1}));
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+    policy.informational_rules[0].signature = None;
+    assert_eq!(normalize(&report, &tree, &policy).outcome, Outcome::Pass);
+    policy.deny_rules = deny_policy().deny_rules;
+    let denied = normalize(&report, &tree, &policy);
+    assert_eq!(denied.outcome, Outcome::Fail);
+    assert_eq!(denied.details["findings"][0]["disposition"], "deny");
+    report["results"][key(&root())]["partial"] = json!(true);
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+}
+
+#[test]
+fn applicability_selectors_are_bounded_plain_types_and_prefixes() {
+    for selector in [
+        ".*",
+        "archive/*",
+        "/",
+        "archive|text",
+        "text/plain\n",
+        "TEXT/plain",
+        "archive//zip",
+    ] {
+        let mut policy = policy();
+        policy
+            .required_services
+            .get_mut("StaticFixture")
+            .unwrap()
+            .applies_to = vec![selector.into()];
+        assert!(policy.validate().is_err(), "{selector:?}");
+    }
+    let mut policy = policy();
+    policy
+        .required_services
+        .get_mut("StaticFixture")
+        .unwrap()
+        .applies_to = vec!["archive/".into(), "archive/".into()];
+    assert!(policy.validate().is_err());
+}
+
+#[test]
+fn omitted_optional_service_selection_lists_use_upstream_defaults_only() {
+    let (mut report, tree) = fixture();
+    for field in ["excluded", "rescan", "resubmit"] {
+        report["params"]["services"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    assert_eq!(normalize(&report, &tree, &policy()).outcome, Outcome::Pass);
+    for invalid in [Value::Null, json!("StaticFixture"), json!({}), json!(false)] {
+        let mut invalid_report = report.clone();
+        invalid_report["params"]["services"]["excluded"] = invalid;
+        assert!(normalize_at(&root(), sid(), &invalid_report, &tree, &policy(), now()).is_err());
+    }
+    report["params"]["services"]
+        .as_object_mut()
+        .unwrap()
+        .remove("selected");
+    assert!(normalize_at(&root(), sid(), &report, &tree, &policy(), now()).is_err());
+}
+
+#[test]
+fn exact_empty_content_requires_explicit_policy_and_never_claims_service_execution() {
+    let (mut report, mut tree) = fixture();
+    add_empty_child(&mut report, &mut tree);
+    let mut policy = policy();
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+    let mut omitted = serde_json::to_value(&policy).unwrap();
+    omitted.as_object_mut().unwrap().remove("allow_empty_files");
+    assert!(
+        !serde_json::from_value::<AssemblylinePolicy>(omitted)
+            .unwrap()
+            .allow_empty_files
+    );
+    policy.allow_empty_files = true;
+    let output = normalize(&report, &tree, &policy);
+    assert_eq!(output.outcome, Outcome::Pass);
+    let empty = sha256(b"");
+    let record = output.details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["sha256"] == empty)
+        .unwrap();
+    assert_eq!(record["status"], "known_empty_content");
+    assert!(record["service"].is_null());
+    assert_eq!(record["service_execution_required"], false);
+    assert_eq!(output.details["known_empty_content"], json!([empty]));
+    assert_eq!(
+        output.valid_until,
+        normalize(&fixture().0, &fixture().1, &policy).valid_until
+    );
+}
+
+#[test]
+fn empty_content_exception_requires_consistent_tree_and_file_metadata() {
+    let (mut report, mut tree) = fixture();
+    add_empty_child(&mut report, &mut tree);
+    let mut policy = policy();
+    policy.allow_empty_files = true;
+    let empty = sha256(b"");
+    for field in ["size", "type", "sha256"] {
+        let mut report = report.clone();
+        report["file_infos"][&empty]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_eq!(
+            normalize(&report, &tree, &policy).outcome,
+            Outcome::Inconclusive
+        );
+    }
+    for (field, invalid) in [
+        ("size", json!(1)),
+        ("size", Value::Null),
+        ("type", json!("unknown")),
+    ] {
+        let mut report = report.clone();
+        let mut tree = tree.clone();
+        tree["tree"][root()]["children"][&empty][field] = invalid;
+        report["file_tree"] = tree["tree"].clone();
+        assert_eq!(
+            normalize(&report, &tree, &policy).outcome,
+            Outcome::Inconclusive
+        );
+    }
+    // Merely labelling different bytes empty cannot obtain the exception.
+    let (mut report, mut tree) = fixture();
+    add_child(&mut report, &mut tree, false);
+    report["file_infos"][child()]["size"] = json!(0);
+    report["file_infos"][child()]["type"] = json!("empty");
+    tree["tree"][root()]["children"][child()]["size"] = json!(0);
+    tree["tree"][root()]["children"][child()]["type"] = json!("empty");
+    report["file_tree"] = tree["tree"].clone();
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+}
+
+#[test]
+fn allowing_known_empty_content_never_waives_nonempty_service_coverage() {
+    let (mut report, mut tree) = fixture();
+    add_child(&mut report, &mut tree, false);
+    add_empty_child(&mut report, &mut tree);
+    let mut policy = policy();
+    policy.allow_empty_files = true;
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+    let mut stale = service_result(&child());
+    stale["created"] = json!("2026-11-09T00:00:00Z");
+    report["results"][key(&child())] = stale;
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+    report["results"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&key(&child()));
+    let mut empty_cached = service_result(&child());
+    empty_cached["response"]["service_version"] = json!("4_7_4_11");
+    empty_cached["response"]["service_tool_version"] = Value::Null;
+    report["results"][format!("{}.e", key(&child()))] = empty_cached;
+    assert_eq!(
+        normalize(&report, &tree, &policy).outcome,
+        Outcome::Inconclusive
+    );
+    report["results"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&format!("{}.e", key(&child())));
+    report["results"][key(&child())] = service_result(&child());
+    assert_eq!(normalize(&report, &tree, &policy).outcome, Outcome::Pass);
 }

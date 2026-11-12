@@ -1,7 +1,9 @@
 //! Bounded, fail-closed normalization of Assemblyline v4 submission evidence.
 //!
-//! The platform score is an observation. Approval requires every explicitly pinned
-//! service to have completed on the original file and every extracted descendant.
+//! The platform score is an observation. Approval requires explicitly pinned
+//! applicable service coverage for the original file and extracted descendants,
+//! with only exact empty content exempted by explicit policy. Applicability and
+//! known-empty accounting never claim service execution or artifact safety.
 use crate::{
     model::{Outcome, sha256},
     scanner::ScannerOutput,
@@ -23,6 +25,12 @@ pub struct AssemblylinePolicy {
     pub required_services: BTreeMap<String, AssemblylineServicePin>,
     #[serde(default)]
     pub deny_rules: Vec<AssemblylineDenyRule>,
+    /// Explicitly acknowledged zero-score observations; all other findings need review.
+    #[serde(default)]
+    pub informational_rules: Vec<AssemblylineDenyRule>,
+    /// Permit exact, consistently reported zero-byte content without service execution.
+    #[serde(default)]
+    pub allow_empty_files: bool,
     #[serde(default = "default_result_age")]
     pub max_result_age_seconds: i64,
 }
@@ -39,6 +47,28 @@ pub struct AssemblylineServicePin {
     pub tool_version: Option<String>,
     /// Exact upstream result-key `c` component, without the `c` prefix.
     pub configuration_key: String,
+    /// Empty means every file. Otherwise exact upstream types or terminal `/` prefixes.
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+}
+
+impl AssemblylineServicePin {
+    pub fn applies_to_file_type(&self, file_type: Option<&str>) -> Option<bool> {
+        if self.applies_to.is_empty() {
+            return Some(true);
+        }
+        file_type
+            .filter(|value| bounded_text(value, 256))
+            .map(|file_type| {
+                self.applies_to.iter().any(|selector| {
+                    if selector.ends_with('/') {
+                        file_type.starts_with(selector)
+                    } else {
+                        file_type == selector
+                    }
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,29 +125,48 @@ impl AssemblylinePolicy {
                         .all(|b| b.is_ascii_alphanumeric()),
                 "Assemblyline requires an exact result configuration key"
             );
+            ensure!(
+                pin.applies_to.len() <= 64,
+                "too many Assemblyline applicability selectors"
+            );
+            let mut selectors = BTreeSet::new();
+            for selector in &pin.applies_to {
+                ensure!(
+                    bounded_text(selector, 256)
+                        && selector.bytes().all(|b| b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || b"/_+.-".contains(&b))
+                        && !selector.starts_with('/')
+                        && !selector.contains("//")
+                        && selectors.insert(selector),
+                    "invalid or duplicate Assemblyline file type selector"
+                );
+            }
         }
         ensure!(
-            self.deny_rules.len() <= 256,
-            "too many Assemblyline deny rules"
+            self.deny_rules.len() <= 256 && self.informational_rules.len() <= 256,
+            "too many Assemblyline observation rules"
         );
-        let mut rules = BTreeSet::new();
-        for rule in &self.deny_rules {
-            ensure!(
-                self.required_services.contains_key(&rule.service),
-                "Assemblyline deny rule service must be explicitly pinned"
-            );
-            ensure!(
-                bounded_text(&rule.heuristic_id, 256)
-                    && rule
-                        .signature
-                        .as_deref()
-                        .is_none_or(|v| bounded_text(v, 256)),
-                "invalid Assemblyline deny rule"
-            );
-            ensure!(
-                rules.insert((&rule.service, &rule.heuristic_id, &rule.signature)),
-                "duplicate Assemblyline deny rule"
-            );
+        for rule_set in [&self.deny_rules, &self.informational_rules] {
+            let mut rules = BTreeSet::new();
+            for rule in rule_set {
+                ensure!(
+                    self.required_services.contains_key(&rule.service),
+                    "Assemblyline observation rule service must be explicitly pinned"
+                );
+                ensure!(
+                    bounded_text(&rule.heuristic_id, 256)
+                        && rule
+                            .signature
+                            .as_deref()
+                            .is_none_or(|v| bounded_text(v, 256)),
+                    "invalid Assemblyline observation rule"
+                );
+                ensure!(
+                    rules.insert((&rule.service, &rule.heuristic_id, &rule.signature)),
+                    "duplicate Assemblyline observation rule"
+                );
+            }
         }
         Ok(())
     }
@@ -135,6 +184,16 @@ fn array<'a>(value: &'a Value, field: &str) -> Result<&'a Vec<Value>> {
         .get(field)
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("Assemblyline {field} array missing"))
+}
+
+fn optional_array<'a>(value: &'a Value, field: &str) -> Result<&'a [Value]> {
+    match value.get(field) {
+        None => Ok(&[]),
+        Some(value) => value
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| anyhow::anyhow!("Assemblyline {field} array invalid")),
+    }
 }
 
 fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
@@ -221,7 +280,9 @@ pub fn normalize_at(
         .get("services")
         .ok_or_else(|| anyhow::anyhow!("Assemblyline service selection missing"))?;
     let selected = array(selection, "selected")?;
-    let excluded = array(selection, "excluded")?;
+    // Submission.ServiceSelection defaults omitted optional lists to [].
+    // Explicit null and non-array values are not an omitted ODM default.
+    let excluded = optional_array(selection, "excluded")?;
     for service in policy.required_services.keys() {
         if !selected.iter().any(|v| v.as_str() == Some(service))
             || excluded.iter().any(|v| v.as_str() == Some(service))
@@ -267,6 +328,9 @@ pub fn normalize_at(
         .map(|(sha, node)| (None::<String>, sha, node, 0usize))
         .collect();
     let mut files = BTreeSet::new();
+    let empty_sha256 = sha256(b"");
+    let mut known_empty_files = BTreeSet::new();
+    let mut inconsistent_empty_files = BTreeSet::new();
     let mut tree_edges = BTreeSet::new();
     let mut tree_records = 0usize;
     while let Some((parent, sha, node, depth)) = queue.pop_front() {
@@ -302,9 +366,30 @@ pub fn normalize_at(
         {
             anyhow::bail!("Assemblyline file metadata digest mismatch");
         }
+        if policy.allow_empty_files && sha == &empty_sha256 {
+            let info = file_infos.get(sha);
+            let exact_empty = node.get("size").and_then(Value::as_u64) == Some(0)
+                && node.get("type").and_then(Value::as_str) == Some("empty")
+                && object(node, "children")?.is_empty()
+                && info.and_then(|v| v.get("sha256")).and_then(Value::as_str) == Some(sha)
+                && info.and_then(|v| v.get("size")).and_then(Value::as_u64) == Some(0)
+                && info.and_then(|v| v.get("type")).and_then(Value::as_str) == Some("empty");
+            if exact_empty {
+                known_empty_files.insert(sha.clone());
+            } else {
+                inconsistent_empty_files.insert(sha.clone());
+                incomplete(
+                    &mut reasons,
+                    format!("empty content metadata is missing or inconsistent for {sha}"),
+                );
+            }
+        }
         for (child, child_node) in object(node, "children")? {
             queue.push_back((Some(sha.clone()), child, child_node, depth + 1));
         }
+    }
+    for sha in &inconsistent_empty_files {
+        known_empty_files.remove(sha);
     }
     for sha in file_infos.keys() {
         ensure!(
@@ -375,6 +460,18 @@ pub fn normalize_at(
             .ok_or_else(|| anyhow::anyhow!("Assemblyline response missing"))?;
         let service = text(response, "service_name")?;
         let version = text(response, "service_version")?;
+        let applicability = policy.required_services.get(service).and_then(|pin| {
+            pin.applies_to_file_type(
+                file_infos
+                    .get(sha)
+                    .and_then(|info| info.get("type"))
+                    .and_then(Value::as_str),
+            )
+        });
+        // An explicitly out-of-scope service is retained as evidence but cannot
+        // supply coverage. Missing metadata never establishes non-applicability.
+        let out_of_scope = applicability == Some(false);
+        let requires_observation = !out_of_scope && !known_empty_files.contains(sha);
         ensure!(
             bounded_text(service, 128) && bounded_text(version, 128),
             "invalid Assemblyline result service identity"
@@ -397,24 +494,28 @@ pub fn normalize_at(
         let empty = suffix == Some("e");
         // Empty cached results are synthesized by the UI with a fresh `created`
         // timestamp and no tool revision. They cannot establish pinned freshness.
-        if !empty {
-            ensure!(
-                key_version == Some(format!("v{}", version.replace('.', "_")).as_str()),
-                "Assemblyline result key version mismatch"
-            );
-        }
+        ensure!(
+            key_version == Some(format!("v{}", version.replace('.', "_")).as_str()),
+            "Assemblyline result key version mismatch"
+        );
         let created = timestamp(result, "created")?;
         let expiry = created
             .checked_add_signed(Duration::seconds(policy.max_result_age_seconds))
             .ok_or_else(|| anyhow::anyhow!("Assemblyline result expiry overflow"))?;
-        let mut fresh = created <= now && expiry > now;
+        let mut fresh = !empty && created <= now && expiry > now;
         let milestones = response
             .get("milestones")
             .ok_or_else(|| anyhow::anyhow!("Assemblyline service milestones missing"))?;
         let started = timestamp(milestones, "service_started")?;
         let completed = timestamp(milestones, "service_completed")?;
         fresh &= started <= completed && completed <= now;
-        let mut effective_expiry = expiry;
+        // Record creation cannot renew the age of an older execution. Keep both
+        // independent clocks bounded without assuming equal timestamp precision.
+        let completion_expiry = completed
+            .checked_add_signed(Duration::seconds(policy.max_result_age_seconds))
+            .ok_or_else(|| anyhow::anyhow!("Assemblyline execution expiry overflow"))?;
+        fresh &= completion_expiry > now;
+        let mut effective_expiry = expiry.min(completion_expiry);
         if !result.get("expiry_ts").is_none_or(Value::is_null) {
             let upstream_expiry = timestamp(result, "expiry_ts")?;
             fresh &= upstream_expiry > now;
@@ -428,7 +529,7 @@ pub fn normalize_at(
             .get("drop_file")
             .and_then(Value::as_bool)
             .ok_or_else(|| anyhow::anyhow!("Assemblyline result drop_file flag missing"))?;
-        if partial || drop_file || empty || !fresh {
+        if requires_observation && (partial || drop_file || empty || !fresh) {
             incomplete(
                 &mut reasons,
                 format!("service {service} on {sha} is partial, filtered, empty-cached, or stale"),
@@ -444,15 +545,18 @@ pub fn normalize_at(
             pin_matched = version == pin.version
                 && key_config == Some(pin.configuration_key.as_str())
                 && tool_matches;
-            if !pin_matched {
+            if !pin_matched && requires_observation {
                 incomplete(
                     &mut reasons,
                     format!("service {service} version, tool, or configuration differs from pin"),
                 );
             }
         }
-        valid_until =
-            Some(valid_until.map_or(effective_expiry, |previous| previous.min(effective_expiry)));
+        if requires_observation && !empty {
+            valid_until = Some(
+                valid_until.map_or(effective_expiry, |previous| previous.min(effective_expiry)),
+            );
+        }
         let mut result_extracted = BTreeSet::new();
         for child in array(response, "extracted")? {
             let child_sha = text(child, "sha256")?;
@@ -504,7 +608,7 @@ pub fn normalize_at(
             };
             let heuristic_id = text(heuristic, "heur_id")?;
             let signatures = array(heuristic, "signature")?;
-            let finding = json!({"sha256":sha,"service":service,"service_version":version,
+            let mut finding = json!({"sha256":sha,"service":service,"service_version":version,
                 "service_tool_version":response.get("service_tool_version"),"configuration_key":key_config,
                 "result_key":key,"section":index,"heuristic":heuristic,"title":section.get("title_text")});
             let mut matching_rules = Vec::new();
@@ -531,12 +635,51 @@ pub fn normalize_at(
                     "result_key":key,"sha256":sha,"service":service,"heuristic_id":heuristic_id}),
                 );
             }
+            let eligible = pin_matched && fresh && !partial && !drop_file && !empty;
+            let mut informational_rules = Vec::new();
+            if eligible && score == 0 && heuristic.get("score").and_then(Value::as_i64) == Some(0) {
+                for (rule_index, rule) in policy.informational_rules.iter().enumerate() {
+                    if rule.service == service
+                        && rule.heuristic_id == heuristic_id
+                        && rule.signature.as_ref().is_none_or(|signature| {
+                            signatures.iter().any(|s| {
+                                s.get("name").and_then(Value::as_str) == Some(signature.as_str())
+                            })
+                        })
+                    {
+                        informational_rules.push(rule_index);
+                    }
+                }
+            }
+            let acknowledged = !informational_rules.is_empty()
+                && (informational_rules
+                    .iter()
+                    .any(|index| policy.informational_rules[*index].signature.is_none())
+                    || signatures.iter().all(|signature| {
+                        signature
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| {
+                                informational_rules.iter().any(|index| {
+                                    policy.informational_rules[*index].signature.as_deref()
+                                        == Some(name)
+                                })
+                            })
+                    }));
+            finding["disposition"] = json!(if !matching_rules.is_empty() {
+                "deny"
+            } else if acknowledged {
+                "informational"
+            } else {
+                "review"
+            });
+            finding["informational_rule_indices"] = json!(informational_rules);
             findings.push(finding);
         }
         observed.entry((sha.to_owned(), service.to_owned())).or_default().push(json!({
             "result_key":key,"service_version":version,"service_tool_version":response.get("service_tool_version"),
             "configuration_key":key_config,"pin_matched":pin_matched,"fresh":fresh,"partial":partial,
-            "drop_file":drop_file,"empty_cached":empty,"created":created,"valid_until":effective_expiry,"score":score}));
+            "drop_file":drop_file,"empty_cached":empty,"applicable":applicability,"created":created,"valid_until":effective_expiry,"score":score}));
     }
     ensure!(
         tree_edges == extracted_edges,
@@ -552,12 +695,46 @@ pub fn normalize_at(
             "platform score has no attributable heuristic finding",
         );
     }
+    if platform_score != 0
+        && findings
+            .iter()
+            .all(|finding| finding["disposition"] == "informational")
+    {
+        incomplete(
+            &mut reasons,
+            "platform score is inconsistent with only zero-score informational observations",
+        );
+    }
     let mut coverage = Vec::new();
     for sha in &files {
-        for service in policy.required_services.keys() {
+        if known_empty_files.contains(sha) {
+            coverage.push(json!({"sha256":sha,"file_type":"empty","size":0,"service":null,
+                "status":"known_empty_content","basis":"sha256_empty_content","service_execution_required":false}));
+            continue;
+        }
+        let file_type = file_infos
+            .get(sha)
+            .and_then(|info| info.get("type"))
+            .and_then(Value::as_str);
+        let mut applicable_services = 0;
+        for (service, pin) in &policy.required_services {
+            let applicability = pin.applies_to_file_type(file_type);
+            if applicability == Some(true) {
+                applicable_services += 1;
+            }
             let records = observed.get(&(sha.clone(), service.clone()));
             let service_error_keys = error_keys.get(&(sha.clone(), service.clone()));
-            let status = if service_error_keys.is_some() {
+            let status = if applicability == Some(false) {
+                "not_applicable"
+            } else if applicability.is_none() {
+                incomplete(
+                    &mut reasons,
+                    format!(
+                        "file type missing or invalid for service {service} applicability on {sha}"
+                    ),
+                );
+                "applicability_unknown"
+            } else if service_error_keys.is_some() {
                 "service_error"
             } else {
                 match records {
@@ -591,7 +768,13 @@ pub fn normalize_at(
                 }
             };
             coverage
-                .push(json!({"sha256":sha,"service":service,"status":status,"results":records,"error_keys":service_error_keys}));
+                .push(json!({"sha256":sha,"file_type":file_type,"service":service,"applicable":applicability,"status":status,"results":records,"error_keys":service_error_keys}));
+        }
+        if applicable_services == 0 {
+            incomplete(
+                &mut reasons,
+                format!("no explicitly applicable required service covers {sha}"),
+            );
         }
     }
     // Coverage/identity uncertainty takes precedence over any heuristic mapping.
@@ -599,14 +782,17 @@ pub fn normalize_at(
         Outcome::Inconclusive
     } else if !matched_denials.is_empty() {
         Outcome::Fail
-    } else if !findings.is_empty() {
+    } else if findings
+        .iter()
+        .any(|finding| finding["disposition"] != "informational")
+    {
         Outcome::Inconclusive
     } else {
         Outcome::Pass
     };
     let reason = match outcome {
         Outcome::Pass => {
-            "all pinned required services completed on the original artifact and extracted descendants without heuristic findings"
+            "required service coverage is complete; content exceptions and observations follow explicit policy"
         }
         Outcome::Fail => {
             "an explicitly configured deny rule matched an attributable service finding"
@@ -614,7 +800,9 @@ pub fn normalize_at(
         _ if !reasons.is_empty() => {
             "incomplete, stale, or unpinned analysis requires investigation"
         }
-        _ => "heuristic observations require investigation unless explicitly mapped to a deny rule",
+        _ => {
+            "heuristic observations require investigation unless explicitly mapped by observation policy"
+        }
     };
     let output = ScannerOutput {
         outcome,
@@ -622,6 +810,7 @@ pub fn normalize_at(
             "reason":reason,"coverage_complete":reasons.is_empty(),"coverage_reasons":reasons,
             "required_services":policy.required_services,"policy":policy,"policy_digest":sha256(&serde_json::to_vec(policy)?),
             "max_result_age_seconds":policy.max_result_age_seconds,"platform_score":platform_score,"files":files,"coverage":coverage,
+            "known_empty_content":known_empty_files,
             "findings":findings,"matched_deny_rules":matched_denials,"service_errors":service_errors,"extracted":extracted,"supplementary":supplementary,
             "raw_report_sha256":sha256(&raw),"raw_tree_sha256":sha256(&raw_tree),"raw_report":report,"raw_tree":tree}),
         references: Vec::new(),

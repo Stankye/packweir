@@ -1,0 +1,131 @@
+# Minimal real Assemblyline appliance components. No scaler, updater, socket,
+# privileged containers or host paths outside the run directory. The UI ingress
+# bridge permits Docker Desktop's host-loopback publishing; core and analysis
+# networks are internal and no worker has ingress or external network access.
+x-common: &common
+  env_file: [".env"]
+  networks: [core]
+  volumes:
+    - ./config.yml:/etc/assemblyline/config.yml:ro
+    - ./classification.yml:/etc/assemblyline/classification.yml:ro
+  restart: "no"
+  cpus: 1.0
+  mem_limit: 512m
+  pids_limit: 256
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "2"}
+x-worker: &worker
+  networks: [analysis]
+  restart: "no"
+  cpus: 1.0
+  mem_limit: 512m
+  pids_limit: 256
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "2"}
+services:
+  elasticsearch:
+    image: ${ELASTICSEARCH_IMAGE}
+    networks: [core]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      ingest.geoip.downloader.enabled: "false"
+      logger.level: WARN
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: [datastore:/usr/share/elasticsearch/data]
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 512
+    healthcheck:
+      test: [CMD-SHELL, "curl --silent --fail -u elastic:$$ELASTIC_PASSWORD localhost:9200/_cluster/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+  redis:
+    image: ${REDIS_IMAGE}
+    networks: [core]
+    command: [redis-server, --maxmemory, 96mb, --maxmemory-policy, noeviction, --save, "", --appendonly, "no"]
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    healthcheck: {test: [CMD, redis-cli, ping], interval: 5s, timeout: 3s, retries: 30}
+  minio:
+    image: ${MINIO_IMAGE}
+    networks: [core]
+    environment:
+      MINIO_ROOT_USER: al_storage_key
+      MINIO_ROOT_PASSWORD: ${FILESTORE_PASSWORD}
+    command: [server, /data]
+    volumes: [filestore:/data]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+  ui:
+    <<: *common
+    networks: [core, ingress]
+    image: ${UI_IMAGE}
+    environment: {WORKERS: "1", THREADS: "2", TIMEOUT: "120"}
+    ports: ["127.0.0.1:${AL_PORT}:5000"]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  dispatcher:
+    <<: *common
+    image: ${RUST_IMAGE}
+    command: [assemblyline-server, dispatcher]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  service-server:
+    <<: *common
+    networks: [core, analysis]
+    image: ${RUST_IMAGE}
+    command: [assemblyline-server, service-api, --allow-http-mode]
+    environment: {BIND_ADDRESS: "0.0.0.0:5003"}
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  extract:
+    <<: *worker
+    image: ${EXTRACT_IMAGE}
+    mem_limit: 1024m
+    cpus: 1.0
+    environment:
+      SERVICE_API_HOST: http://service-server:5003
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+      SERVICE_TAG: 4.7.0.stable10
+    profiles: [analysis]
+    depends_on: [service-server]
+  yara:
+    <<: *worker
+    image: ${YARA_IMAGE}
+    mem_limit: 384m
+    environment:
+      SERVICE_API_HOST: http://service-server:5003
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+      SERVICE_TAG: 4.7.0.1
+    profiles: [analysis]
+    depends_on: [service-server]
+  bootstrap:
+    <<: *common
+    image: ${CORE_IMAGE}
+    command: [python, /run/qualification/bootstrap.py]
+    volumes:
+      - ./config.yml:/etc/assemblyline/config.yml:ro
+      - ./classification.yml:/etc/assemblyline/classification.yml:ro
+      - .:/run/qualification:ro
+    profiles: [setup]
+networks:
+  core: {internal: true}
+  analysis: {internal: true}
+  ingress: {}
+volumes:
+  datastore: {}
+  filestore: {}

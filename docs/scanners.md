@@ -59,7 +59,7 @@ Built-in drivers cover Sigstore blob signatures, source-bound SLSA Verifier chec
 
 ## Native Assemblyline v4 integration
 
-Assemblyline v4 is an external analysis platform with an operator-selected set of services. Packweir 0.9.0 adds an experimental [native asynchronous client](assemblyline.md), with durable submission intent/SIDs, ordinary-analysis checkpoints, deferred queue polling, context/lease fencing, and administrative reconciliation. The gateway and worker do not hold a lease for the entire remote analysis. Controlled HTTP/SQL/worker-CLI tests use pinned upstream schema fixtures; qualification against a live instance remains required.
+Assemblyline v4 is an external analysis platform with an operator-selected set of services. Packweir has an experimental [native asynchronous client](assemblyline.md), with durable submission intent/SIDs, ordinary-analysis checkpoints, deferred queue polling, context/lease fencing, and administrative reconciliation. The gateway and worker do not hold a lease for the entire remote analysis. Version 0.10.0 adds type-specific service pins, native inventory reconciliation, and a live suite using the real pinned appliance, official Extract, and a native-YARA qualification rule. Other services, rules, and deployments need separate qualification.
 
 The integration must retain the original artifact digest, submission identifier, selected service/configuration revisions, report references, and parent/child file relationships. Normalize service findings independently, preserving partial results, skipped services, errors, and timeouts. A successful submission or low aggregate score is not proof that every required check ran. Results must still match the active evidence context before affecting delivery.
 

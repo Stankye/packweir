@@ -69,6 +69,8 @@ enum Behavior {
     TreeFiltered,
     ServicePinMismatch,
     EffectiveParamsMismatch,
+    OmittedOptionalSelections,
+    InvalidOptionalSelection,
     ServiceError,
     ExternalService,
     UnknownPrivilege,
@@ -124,6 +126,17 @@ impl MockState {
             Behavior::MetadataMismatch => body["metadata"]["packweir_run_id"] = json!("wrong-run"),
             Behavior::SubjectMismatch => body["files"][0]["sha256"] = json!("a".repeat(64)),
             Behavior::EffectiveParamsMismatch => body["params"]["deep_scan"] = json!(true),
+            Behavior::OmittedOptionalSelections => {
+                for name in ["excluded", "rescan", "resubmit"] {
+                    body["params"]["services"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(name);
+                }
+            }
+            Behavior::InvalidOptionalSelection => {
+                body["params"]["services"]["resubmit"] = Value::Null
+            }
             Behavior::ServicePinMismatch => {
                 if let Some(results) = body.get_mut("results").and_then(Value::as_object_mut) {
                     for result in results.values_mut() {
@@ -141,6 +154,43 @@ struct MockServer {
     origin: String,
     state: Arc<MockState>,
     task: tokio::task::JoinHandle<()>,
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn optional_service_lists_default_to_empty_only_when_absent(pool: sqlx::PgPool) {
+    let harness = Harness::new(pool, Behavior::OmittedOptionalSelections).await;
+    harness.worker().await;
+    harness.due().await;
+    harness.worker().await;
+    assert_eq!(harness.remote().await.get::<String, _>("state"), "complete");
+    assert!(
+        harness
+            .evidence()
+            .await
+            .iter()
+            .any(|e| e.check == "assemblyline" && e.outcome == Outcome::Pass)
+    );
+    assert_eq!(harness.download().await.0, StatusCode::OK);
+    assert_eq!(harness.server.state.posts.load(Ordering::SeqCst), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn optional_service_lists_reject_explicit_null(pool: sqlx::PgPool) {
+    let harness = Harness::new(pool, Behavior::InvalidOptionalSelection).await;
+    harness.worker().await;
+    for _ in 0..3 {
+        harness.due().await;
+        harness.worker().await;
+    }
+    assert!(
+        !harness
+            .evidence()
+            .await
+            .iter()
+            .any(|e| e.check == "assemblyline" && e.outcome == Outcome::Pass)
+    );
+    assert_eq!(harness.download().await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.server.state.posts.load(Ordering::SeqCst), 1);
 }
 
 impl Drop for MockServer {

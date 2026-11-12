@@ -1,0 +1,24 @@
+name: PackweirYARA
+version: 4.7.0.1
+description: Bounded YARA static scan using the harmless Packweir qualification marker rule.
+accepts: .*
+rejects: empty|metadata/.*
+stage: CORE
+category: Static Analysis
+file_required: true
+timeout: 30
+enabled: true
+is_external: false
+privileged: false
+disable_cache: false
+config: {}
+heuristics:
+  - heur_id: 1
+    name: Harmless qualification marker
+    score: 1000
+    filetype: ".*"
+    description: The actual YARA engine matched the harmless Packweir integration qualification marker.
+docker_config:
+  image: packweir/assemblyline-yara:qualification-v1
+  cpu_cores: 1.0
+  ram_mb: 256
