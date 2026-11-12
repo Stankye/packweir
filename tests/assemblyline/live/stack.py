@@ -88,7 +88,7 @@ def prepare(output: Path, docker: str | None = None) -> Path:
     if output == target or target not in output.parents:
         raise ValueError('Output must be a new directory below workspace target/')
     output.mkdir(parents=True, exist_ok=True)
-    os.chmod(output, 0o700)
+    os.chmod(output, 0o750)
     state_path = output / 'stack-state.json'
     if state_path.exists():
         _load(state_path)
@@ -103,6 +103,7 @@ def prepare(output: Path, docker: str | None = None) -> Path:
               ('ELASTIC_PASSWORD', 'FILESTORE_PASSWORD', 'SERVICE_API_KEY', 'AL_ADMIN_PASSWORD', 'FLASK_SECRET')}
     values.update(LOCK['images'])
     values.update({'AL_PORT': str(port), 'AL_ADMIN_USER': 'packweir-live',
+        'RUN_GID': str(os.getgid()) if os.name != 'nt' else '1000',
         'YARA_IMAGE': f'packweir/assemblyline-yara:{project}', 'REGISTRY': '',
         'SERVICE_API_HOST': 'http://service-server:5003', 'WORKERS': '1',
         'THREADS': '2', 'AL_LOG_LEVEL': 'INFO'})
@@ -116,6 +117,7 @@ def prepare(output: Path, docker: str | None = None) -> Path:
         config = config.replace('{' + key + '}', value)
     (output / 'config.yml').write_text(config, encoding='utf-8')
     (output / 'manifests').mkdir(exist_ok=True)
+    os.chmod(output / 'manifests', 0o750)
     shutil.copyfile(HERE / 'stack.lock.json', output / 'stack.lock.json')
     state = {'schema_version': 1, 'project': project, 'docker': docker or _docker_default(),
         'run_dir': str(output), 'compose_file': str(output / 'compose.yaml'),
@@ -126,8 +128,12 @@ def prepare(output: Path, docker: str | None = None) -> Path:
         'yara_image': values['YARA_IMAGE']}
     state_path.write_text(json.dumps(state, indent=2) + '\n', encoding='utf-8')
     # POSIX permissions also apply when the harness runs on a Linux runner.
-    for name in ('.env', 'apikey', 'config.yml', 'stack-state.json'):
+    for name in ('.env', 'stack-state.json'):
         os.chmod(output / name, 0o600)
+    # Only the exact host group is added to core/bootstrap containers. These
+    # read-only bind inputs need group access when host/image UIDs differ.
+    for name in ('bootstrap.py', 'classification.yml', 'apikey', 'config.yml'):
+        os.chmod(output / name, 0o640)
     _compose(state, ['config', '--quiet'], log='compose-validation.log')
     return state_path
 
@@ -149,6 +155,7 @@ def up(path: Path, timeout=600):
     values = _env(state)
     for name in ('compose.yaml', 'bootstrap.py'):
         shutil.copyfile(HERE / name, Path(state['run_dir']) / name)
+    os.chmod(Path(state['run_dir']) / 'bootstrap.py', 0o640)
     # Digest-pinned downloads only; keep the build bounded by the same deadline.
     _compose(state, ['pull', '--ignore-buildable', 'elasticsearch', 'redis', 'minio', 'ui', 'dispatcher', 'service-server', 'extract', 'bootstrap'],
              timeout=remaining(), log='pull.log')
@@ -167,6 +174,8 @@ def up(path: Path, timeout=600):
     manifest_dir = Path(state['run_dir']) / 'manifests'
     (manifest_dir / 'extract.yml').write_text(manifest, encoding='utf-8')
     shutil.copyfile(ROOT / 'tools/assemblyline-yara/service_manifest.yml', manifest_dir / 'yara.yml')
+    for name in ('extract.yml', 'yara.yml'):
+        os.chmod(manifest_dir / name, 0o640)
     # Initialize schema with one upstream process before concurrent Rust/Python
     # startup. Their fresh-index creation otherwise races on an empty datastore.
     _compose(state, ['up', '-d', '--wait', '--wait-timeout', str(max(1, int(remaining()))),

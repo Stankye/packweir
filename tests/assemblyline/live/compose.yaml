@@ -4,6 +4,9 @@
 # networks are internal and no worker has ingress or external network access.
 x-common: &common
   env_file: [".env"]
+  # Preserve the image's non-root user while granting read access to the
+  # host-owned 0640 config/API key and traversal of the 0750 bootstrap mount.
+  group_add: ["${RUN_GID}"]
   networks: [core]
   volumes:
     - ./config.yml:/etc/assemblyline/config.yml:ro
