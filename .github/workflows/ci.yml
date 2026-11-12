@@ -18,6 +18,7 @@ jobs:
           path: |
             target/ossgadget/**/*.log
             target/ossgadget/**/*.json
+            target/ossgadget/**/LICENSE.OSSGadget.txt
           if-no-files-found: warn
   license_tool:
     runs-on: ubuntu-latest
