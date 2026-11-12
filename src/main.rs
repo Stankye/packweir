@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use packweir::{
     config::Config,
     gateway::{self, AppState},
-    inventory, scanner,
+    inventory, oci, scanner,
     storage::BlobStore,
     store::Store,
 };
@@ -36,6 +36,11 @@ enum Commands {
     Hosted {
         #[command(subcommand)]
         command: HostedCommands,
+    },
+    /// Exchange digest-bound OCI evidence archives without trusting foreign claims.
+    Evidence {
+        #[command(subcommand)]
+        command: EvidenceCommands,
     },
     /// Inspect a local archive without executing package code.
     Inventory {
@@ -102,6 +107,144 @@ enum HostedCommands {
         #[arg(long)]
         manifest: String,
     },
+}
+
+#[derive(Subcommand)]
+enum EvidenceCommands {
+    /// Capture the current local snapshot, or reexport an immutable foreign import.
+    Export {
+        digest: String,
+        #[arg(long)]
+        layout: PathBuf,
+        #[arg(long)]
+        import_id: Option<uuid::Uuid>,
+    },
+    /// Archive foreign claims; this never approves the package or queues scans.
+    Import {
+        digest: String,
+        #[arg(long)]
+        layout: PathBuf,
+        #[arg(long)]
+        manifest: String,
+    },
+    /// Validate local OCI integrity offline, without configuration or services.
+    Validate {
+        #[arg(long)]
+        layout: PathBuf,
+        #[arg(long)]
+        manifest: String,
+    },
+    /// List immutable import receipts for an already registered package digest.
+    Imports { digest: String },
+}
+
+fn bundle_summary(bundle: &oci::ValidatedBundle) -> serde_json::Value {
+    serde_json::json!({
+        "manifest_digest":bundle.manifest_digest(),
+        "subject":bundle.envelope().subject,
+        "verified":false,"trust_status":"unverified","approval_effect":"none",
+        "integrity":"validated",
+        "documents":bundle.envelope().documents
+    })
+}
+
+async fn evidence_response(request: reqwest::RequestBuilder) -> Result<Vec<u8>> {
+    let mut response = request.send().await?;
+    let status = response.status();
+    // Redirects are disabled on this client: admin credentials never follow a
+    // registry-controlled Location, even on the same origin.
+    ensure!(status.is_success(), "evidence request failed: {status}");
+    let limit = oci::MAX_TRANSFER_BYTES;
+    ensure!(
+        response.content_length().is_none_or(|n| n <= limit as u64),
+        "evidence response exceeds size limit"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            chunk.len() <= limit.saturating_sub(bytes.len()),
+            "evidence response exceeds size limit"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn evidence_command(config: &Config, command: EvidenceCommands) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let token = std::env::var("PACKWEIR_ADMIN_TOKEN")?;
+    let report = match command {
+        EvidenceCommands::Export {
+            digest,
+            layout,
+            import_id,
+        } => {
+            oci::validate_subject(&digest)?;
+            let path = match import_id {
+                Some(id) => format!("api/v1/artifacts/{digest}/evidence-imports/{id}/export"),
+                None => format!("api/v1/artifacts/{digest}/evidence-export"),
+            };
+            let bytes = evidence_response(
+                client
+                    .get(config.public_url.join(&path)?)
+                    .bearer_auth(&token),
+            )
+            .await?;
+            let bundle = oci::parse_transfer(&bytes)?;
+            ensure!(
+                bundle.envelope().subject == digest,
+                "exported package subject mismatch"
+            );
+            oci::write_layout(&layout, &bundle)?;
+            bundle_summary(&bundle)
+        }
+        EvidenceCommands::Import {
+            digest,
+            layout,
+            manifest,
+        } => {
+            oci::validate_subject(&digest)?;
+            let bundle = oci::read_layout(&layout, &manifest)?;
+            ensure!(
+                bundle.envelope().subject == digest,
+                "imported package subject mismatch"
+            );
+            let body = serde_json::to_vec(&bundle.transfer())?;
+            ensure!(
+                body.len() <= oci::MAX_TRANSFER_BYTES,
+                "evidence transfer exceeds size limit"
+            );
+            let path = format!("api/v1/artifacts/{digest}/evidence-import");
+            let bytes = evidence_response(
+                client
+                    .post(config.public_url.join(&path)?)
+                    .bearer_auth(&token)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(body),
+            )
+            .await?;
+            serde_json::from_slice(&bytes)?
+        }
+        EvidenceCommands::Imports { digest } => {
+            oci::validate_subject(&digest)?;
+            let path = format!("api/v1/artifacts/{digest}/evidence-imports");
+            let bytes = evidence_response(
+                client
+                    .get(config.public_url.join(&path)?)
+                    .bearer_auth(&token),
+            )
+            .await?;
+            serde_json::from_slice(&bytes)?
+        }
+        EvidenceCommands::Validate { .. } => {
+            unreachable!("offline validation runs before loading config")
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 async fn hosted_command(config: &Config, command: HostedCommands) -> Result<()> {
@@ -191,6 +334,17 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
+    if let Commands::Evidence {
+        command: EvidenceCommands::Validate { layout, manifest },
+    } = &cli.command
+    {
+        let bundle = oci::read_layout(layout, manifest)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&bundle_summary(&bundle))?
+        );
+        return Ok(());
+    }
     if let Commands::Inventory { path, format } = &cli.command {
         let metadata = std::fs::metadata(path)?;
         ensure!(
@@ -229,6 +383,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Commands::Hosted { command } => hosted_command(&config, command).await?,
+        Commands::Evidence { command } => evidence_command(&config, command).await?,
         Commands::Health => {
             let mut address = config.listen;
             if address.ip().is_unspecified() {

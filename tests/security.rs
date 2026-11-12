@@ -549,6 +549,11 @@ async fn blob_storage_verifies_and_rejects_traversal() {
     .unwrap();
     let digest = store.put(b"approved".to_vec()).await.unwrap();
     assert_eq!(store.read(&digest).await.unwrap(), b"approved");
+    assert_eq!(store.read_bounded(&digest, 8).await.unwrap(), b"approved");
+    assert!(store.read_bounded(&digest, 7).await.is_err());
+    assert!(store.read_bounded("../../secret", 8).await.is_err());
+    let empty = store.put(Vec::new()).await.unwrap();
+    assert!(store.read_bounded(&empty, 0).await.unwrap().is_empty());
     assert!(store.read("../../secret").await.is_err());
     std::fs::write(
         root.path()
@@ -557,4 +562,5 @@ async fn blob_storage_verifies_and_rejects_traversal() {
     )
     .unwrap();
     assert!(store.read(&digest).await.is_err());
+    assert!(store.read_bounded(&digest, 8).await.is_err());
 }

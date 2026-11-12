@@ -163,6 +163,15 @@ def main():
             compose("up","-d","--no-deps","worker")
             staged = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","prefetch")
             explain_digest = re.search(r"explain_digest=([0-9a-f]{64})", staged).group(1)
+            evidence_log = compose("run", "--rm", "--no-deps", "probe", "python", "/tests/evidence_probe.py",
+                                   explain_digest, log_name="evidence-exchange.log")
+            evidence_proof = json.loads(re.search(r"PACKWEIR_EVIDENCE_PROOF=(.+)", evidence_log).group(1))
+            if (evidence_proof.get("status") != "passed" or evidence_proof.get("subject") != explain_digest
+                    or evidence_proof.get("document_count", 0) < 3
+                    or evidence_proof.get("exact_import_readback") != "passed"
+                    or evidence_proof.get("local_decisions_unchanged") != "passed"):
+                raise RuntimeError("Evidence exchange must preserve exact stored documents and local policy authority")
+            (output / "evidence-exchange-report.json").write_text(json.dumps(evidence_proof, indent=2))
             hosted_log = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-promote",stage_id,log_name="hosted-promote.log")
             hosted_proof = json.loads(re.search(r"PACKWEIR_HOSTED_PROOF=(.+)", hosted_log).group(1))
             hosted_proof["publisher"] = {"client":"gradle-maven-publish", "version_output":publication_version.group(1), "log":"hosted-publish.log"}
@@ -261,7 +270,7 @@ def main():
             images = [{key: item[key] for key in ["Id","RepoTags","RepoDigests","Architecture","Os"]} for item in json.loads(inspected)]
             results.append({"storage":storage,"clients":clients,"pending_gate":"passed","denied_gate":"passed",
                             "offline_cache":"passed","retained_blob_tampering":"passed","dependency_outage":"passed",
-                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","hosted_maven":hosted_proof,"hosted_nuget":nuget_proof,"images":images,
+                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","evidence_exchange":evidence_proof,"hosted_maven":hosted_proof,"hosted_nuget":nuget_proof,"images":images,
                             "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()})
             (output/"report.json").write_text(json.dumps(results[-1],indent=2))
             print(f"{storage}: policy gates, offline cache, and tamper rejection passed; report: {output / 'report.json'}", flush=True)

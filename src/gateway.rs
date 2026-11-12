@@ -120,6 +120,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(|| async { "ok" }))
         .route("/ready", get(ready))
         .merge(admin)
+        .merge(crate::exchange::router(state.clone()))
         .merge(crate::hosted_http::router(state.clone()))
         .merge(crate::hosted_nuget::router(state.clone()))
         .merge(packages)
@@ -196,7 +197,7 @@ pub fn authorized(headers: &HeaderMap, token: &str) -> bool {
             .ct_eq(sha256(token.as_bytes()).as_bytes())
             .into()
 }
-async fn admin_auth(
+pub(crate) async fn admin_auth(
     State(state): State<AppState>,
     request: axum::extract::Request,
     next: Next,
@@ -618,7 +619,7 @@ async fn gate(
                 headers,
             )?;
             if !repo.retain {
-                // Only delete if no retaining repository or active analysis references this blob.
+                // Evidence imports retain their actual CAS objects, not their package subject.
                 let retained: Vec<String> = state
                     .config
                     .repositories
@@ -626,11 +627,17 @@ async fn gate(
                     .filter(|(_, r)| r.retain)
                     .map(|(n, _)| n.clone())
                     .collect();
-                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running')) OR EXISTS(SELECT 1 FROM hosted_files WHERE digest=$1)")
-                    .bind(&artifact.digest).bind(&retained).fetch_one(&state.store.pool).await?;
+                let mut tx = state.store.pool.begin().await?;
+                // Import registration takes the same lock before writing CAS
+                // bytes, so deletion cannot race newly committed references.
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('packweir.cas.retention:' || $1,0))")
+                    .bind(&artifact.digest).execute(&mut *tx).await?;
+                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running')) OR EXISTS(SELECT 1 FROM hosted_files WHERE digest=$1) OR EXISTS(SELECT 1 FROM external_import_blobs WHERE digest=$1)")
+                    .bind(&artifact.digest).bind(&retained).fetch_one(&mut *tx).await?;
                 if !referenced {
                     state.blobs.delete(&artifact.digest).await?;
                 }
+                tx.commit().await?;
             }
             Ok(response)
         }
@@ -695,6 +702,7 @@ async fn capabilities() -> Json<Value> {
         "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases","nuget_immutable_releases"],"cross_repository_promotion":"sealed_copy_requires_fresh_destination_approval","nuget_signature_verification":false,"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "conditional_agent_escalation":true,
+        "oci_evidence_exchange":{"layout_version":"1.0.0","manifest_version":"1.1.1","import_trust":"unverified_foreign_claim","approval_effect":"none","registry_transport":"external_oras_cli"},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "characteristics":"pinned_ossgadget_application_inspector_helper_with_bounded_text_coverage",
         "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",

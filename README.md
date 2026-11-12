@@ -20,6 +20,7 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Authenticated gateway and administrative API; separate administrative and package-read credentials.
 - Bounded upstream downloads with exact-origin allowlists, redirect validation, DNS pinning, and private-address rejection.
 - Content-addressed OpenDAL filesystem/S3 storage, verified reads, and optional post-delivery retention.
+- [OCI evidence export/import](docs/oci-exchange.md), offline layout validation, immutable foreign-claim receipts, and real ORAS interoperability qualification.
 - PostgreSQL-backed artifacts, leased jobs, evidence, source-document revisions, decisions, and audit events.
 - Fail-closed policy evaluation: a missing, unsupported, failed, expired, or inconclusive required check cannot approve delivery.
 - Bounded archive inventory, native-binary identification, and observed CycloneDX 1.6/SPDX 2.3 file inventories.
@@ -102,6 +103,11 @@ The administrative endpoints below require `Authorization: Bearer <admin-token>`
 | POST | `/api/v1/artifacts/{digest}/documents` | Preserve an external document, without asserting trust |
 | GET | `/api/v1/artifacts/{digest}/documents/{blob}` | Retrieve a document linked to this artifact |
 | POST | `/api/v1/artifacts/{digest}/rescan` | Expire current evidence and enqueue reanalysis |
+| GET | `/api/v1/artifacts/{digest}/evidence-export` | Export a bounded local snapshot and original document bytes as an OCI transfer |
+| POST | `/api/v1/artifacts/{digest}/evidence-import` | Archive a validated OCI transfer as unverified foreign claims |
+| GET | `/api/v1/artifacts/{digest}/evidence-imports` | List immutable import receipts |
+| GET | `/api/v1/artifacts/{digest}/evidence-imports/{id}` | Inspect one import receipt |
+| GET | `/api/v1/artifacts/{digest}/evidence-imports/{id}/export` | Reexport the original immutable imported transfer |
 | POST | `/api/v1/prefetch` | Stage a repository-relative package path |
 
 Document ingestion accepts `{"kind":"sbom","origin":"publisher_declared","document":{...}}`. Kinds are `sbom`, `attestation`, `sigstore_bundle`, `vex`, and `lockfile`; external origins are `publisher_declared` and `client_resolved`. Ingested SBOMs receive envelope checks only, not full schema or semantic validation. Ingesting a signature or provenance statement does not verify it or approve an artifact. See [tool integrations](docs/integrations.md) to configure and require Sigstore verification.
@@ -136,4 +142,4 @@ See [license observations](docs/licenses.md) to configure ScanCode/SPDX policy a
 
 The [initial source review](docs/initial-review.md) records corrected defects, completed validation, and remaining qualification gaps.
 
-See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, OCI/ORAS transport, hosted publishing beyond immutable Maven/NuGet releases, repository groups, general RBAC, remote repository federation, a UI, and VM sandboxing remain unfinished. See [Maven hosting](docs/hosted.md), [NuGet hosting](docs/nuget.md), and [cross-repository promotion](docs/promotion.md) for supported publishing workflows and limits.
+See [scanner protocol](docs/scanners.md) for the external-tool trust boundary, [tool integrations](docs/integrations.md) for Sigstore configuration and the Hipcheck/OSSGadget/Google tool plan, and [compatibility and roadmap](docs/compatibility.md) for explicit limitations. [OCI evidence exchange](docs/oci-exchange.md) supports local layouts and operator-managed ORAS transport; OCI package serving remains unfinished. Specialized tools, native provenance retrieval and source/build trust verification, complete SBOM validation, application dependency resolution, hosted publishing beyond immutable Maven/NuGet releases, repository groups, general RBAC, remote repository federation, a UI, and VM sandboxing remain unfinished. See [Maven hosting](docs/hosted.md), [NuGet hosting](docs/nuget.md), and [cross-repository promotion](docs/promotion.md) for supported publishing workflows and limits.

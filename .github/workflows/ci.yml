@@ -3,6 +3,31 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  oras:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qualify authenticated ORAS and the actual evidence CLI offline
+        run: python3 tests/oras/run.py
+      - name: Preserve real ORAS interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oras-qualification
+          path: |
+            target/oras/**/report.json
+            target/oras/**/source.json
+            target/oras/**/image.json
+            target/oras/**/provision.json
+            target/oras/**/upstream-authentication.log
+            target/oras/**/upstream-attestation.log
+            target/oras/**/build.log
+            target/oras/**/run.log
+            target/oras/**/runtime/*.json
+            target/oras/**/runtime/*.log
+            target/oras/**/runtime/LICENSE.ORAS.txt
+          if-no-files-found: warn
   ossgadget:
     runs-on: ubuntu-latest
     timeout-minutes: 35
