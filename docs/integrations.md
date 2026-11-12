@@ -67,12 +67,12 @@ This example configures an optional operator-owned protocol wrapper. A [built-in
 
 ## Microsoft OSSGadget coverage
 
-The integration plan covers the suite through independently named checks and helpers. Tool-specific wrappers are not yet bundled. This grouping is Packweir's proposed integration contract, based on the [upstream tool list](https://github.com/microsoft/OSSGadget).
+Version 0.7.0 implements [Microsoft rule observations](ossgadget.md) using the actual Application Inspector API shipped with OSSGadget 0.2.49. A pinned helper preserves file-completion status and disables recursive extraction. Characteristic, backdoor, and custom-rule modes are available; the broader suite remains planned. Current upstream uses a unified `ossgadget` CLI; legacy executable names below identify the intended tool roles. See the [upstream tool list](https://github.com/microsoft/OSSGadget).
 
 | Tools | Planned evidence or helper role |
 |---|---|
-| `oss-characteristic`, `oss-detect-cryptography` | Content characteristics and cryptographic implementation observations, linked to inspected file digests. |
-| `oss-defog`, `oss-detect-backdoor` | Deobfuscation leads and suspicious-code findings with uncertainty and original/transformed content references. |
+| `characteristic`, `detect-backdoor`, custom rules | Implemented through the pinned API helper: bounded file observations, explicit completion/coverage, locations and rule IDs, optional selected-rule denial, and conditional investigation. |
+| `oss-detect-cryptography`, `oss-defog` | Planned cryptographic implementation observations and deobfuscation helpers with original/transformed content references. |
 | `oss-diff`, `oss-reproducible` | Version comparisons and source/package correspondence evidence, with explicit comparison inputs and coverage. |
 | `oss-find-domain-squats`, `oss-find-squats` | Name/domain similarity signals for investigation. |
 | `oss-find-source`, `oss-metadata`, `oss-health`, `oss-risk-calculator` | Candidate source mappings, metadata and posture signals with attributable sources and assessment versions. |
@@ -93,7 +93,7 @@ OSV-Scanner and SLSA Verifier have built-in drivers; the other integrations belo
 | [OpenSSF Package Analysis](https://github.com/ossf/package-analysis) | Behavioral investigation in an isolated execution environment, with install/runtime traces and bounded network/resource policy. |
 | [GUAC](https://github.com/guacsec/guac) | Optional graph exchange for artifact, dependency, vulnerability, and attestation relationships. Retain statement origin and verification status; imported relationships do not confer trust. PostgreSQL remains Packweir's decision/job store. |
 
-Next work should broaden automatic identity/provenance discovery, add individual OSSGadget checks and license evidence, and integrate Assemblyline, binary helpers, and agent escalation with the same attributable evidence. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
+Next work should broaden automatic identity/provenance discovery, add the remaining OSSGadget helpers and license workflows, and integrate Assemblyline and binary helpers with the same attributable evidence. [Conditional agent scheduling](agent-escalation.md) is implemented; model/provider-specific adapters remain operator-provided. Each integration needs valid, invalid, unsupported, partial, stale, timeout, output-limit, and context-change fixtures before production enforcement.
 
 ## Validation
 

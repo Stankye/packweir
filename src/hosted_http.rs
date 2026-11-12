@@ -555,7 +555,7 @@ async fn queue_release(state: &AppState, id: Uuid) -> Result<()> {
         let effective = state.config.effective_policy(&file.artifact.scope())?;
         let evidence = state
             .store
-            .evidence(&file.artifact.digest, &fingerprint)
+            .policy_evidence(&file.artifact.digest, &fingerprint)
             .await?;
         if matches!(
             effective.policy.evaluate(

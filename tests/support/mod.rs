@@ -23,3 +23,29 @@ pub fn fixture_program() -> &'static Path {
         path
     })
 }
+
+#[allow(dead_code)]
+pub fn escalation_fixture_program() -> &'static Path {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/escalation-fixture")
+            .join(std::process::id().to_string());
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!(
+            "escalation-fixture{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/escalation_fixture.rs");
+        let status = std::process::Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(source)
+            .arg("-o")
+            .arg(&path)
+            .status()
+            .expect("Rust compiler required for escalation protocol fixture");
+        assert!(status.success());
+        path
+    })
+}

@@ -831,29 +831,33 @@ async fn evaluate_files(
         let configuration = config.delivery_fingerprint(&scope)?;
         let policy = config.effective_policy(&scope)?;
         let context_revision = revisions[file.artifact.digest.as_str()];
-        let evidence_bytes:i64=sqlx::query_scalar("SELECT COALESCE(sum(octet_length(document::text)),0)::bigint FROM evidence WHERE subject=$1 AND configuration=$2 AND context_revision=$3 AND created_at<=$4 AND expires_at>$4")
-            .bind(&file.artifact.digest).bind(&configuration).bind(context_revision).bind(now).fetch_one(&mut **tx).await?;
+        let selected = crate::store::policy_evidence_rows(
+            &mut **tx,
+            &file.artifact.digest,
+            &configuration,
+            Some(context_revision),
+            now,
+        )
+        .await
+        .map_err(|error| HostedError::NotApproved(error.to_string()))?;
         total_evidence_bytes = total_evidence_bytes
-            .checked_add(evidence_bytes)
+            .checked_add(selected.bytes)
             .ok_or_else(|| HostedError::NotApproved("evidence bound exceeded".into()))?;
         if total_evidence_bytes > 32 * 1024 * 1024 {
             return Err(HostedError::NotApproved(
                 "release evidence exceeds receipt limit".into(),
             ));
         }
-        let rows=sqlx::query("SELECT id,document FROM evidence WHERE subject=$1 AND configuration=$2 AND context_revision=$3 AND created_at<=$4 AND expires_at>$4 ORDER BY created_at,id LIMIT 1025")
-            .bind(&file.artifact.digest).bind(&configuration).bind(context_revision).bind(now).fetch_all(&mut **tx).await?;
-        if rows.len() > 1024 {
-            return Err(HostedError::NotApproved(
-                "too many current evidence records".into(),
-            ));
-        }
         let mut evidence = Vec::new();
         let mut bound = Vec::new();
-        for row in rows {
-            let document: Value = row.try_get("document")?;
-            evidence.push(serde_json::from_value::<Evidence>(document.clone())?);
-            bound.push(json!({"id":row.try_get::<Uuid,_>("id")?,"document":document}));
+        for (id, document) in selected.rows {
+            let finding = serde_json::from_value::<Evidence>(document.clone())?;
+            if finding.applicable(&file.artifact.digest, &finding.check, &configuration, now) {
+                bound.push(json!({"id":id,"document":document}));
+            }
+            // Latest invalid inputs still participate in policy, but an approved
+            // receipt must not present expired/future records as current proof.
+            evidence.push(finding);
         }
         match policy
             .policy

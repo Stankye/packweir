@@ -93,7 +93,9 @@ pub async fn verify_executable(path: &str, expected: &str) -> Result<()> {
     );
     let mut hash = Sha256::new();
     let mut total = 0u64;
-    let mut buffer = [0; 65536];
+    // This buffer survives reads across await points. Heap storage keeps its
+    // 64 KiB out of every enclosing scanner/worker future and its stack moves.
+    let mut buffer = vec![0; 65536];
     loop {
         let count = file.read(&mut buffer).await?;
         if count == 0 {

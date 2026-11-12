@@ -122,6 +122,7 @@ impl Fixture {
             revision: "nuget-production-review-v1".into(),
             required: vec!["release_review".into()],
             deny_on_failure: vec!["release_review".into()],
+            agent_escalation: None,
         });
         config.repositories.insert("prod".into(), repo);
         config.storage = StorageConfig::Fs {

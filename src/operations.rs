@@ -68,6 +68,7 @@ pub struct OutcomeCounts {
     pub inconclusive: i64,
     pub unsupported: i64,
     pub error: i64,
+    pub skipped: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +156,7 @@ WITH observation AS MATERIALIZED (
             AND e.document->>'configuration' = e.configuration
             AND jsonb_typeof(e.document->'configuration') = 'string'
             AND jsonb_typeof(e.document->'tool_version') = 'string'
-            AND e.document->>'outcome' IN ('pass','fail','inconclusive','unsupported','error')
+            AND e.document->>'outcome' IN ('pass','fail','inconclusive','unsupported','error','skipped')
             AND (NOT (e.document ? 'references') OR (
                 jsonb_typeof(e.document->'references') = 'array'
                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(
@@ -229,7 +230,8 @@ SELECT o.observed_at,
             'fail', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='fail'),
             'inconclusive', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='inconclusive'),
             'unsupported', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='unsupported'),
-            'error', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='error')
+            'error', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='error'),
+            'skipped', count(*) FILTER (WHERE status='current_context_time_valid' AND outcome='skipped')
         )
     ) FROM classified_evidence) AS evidence,
     (SELECT jsonb_build_object(
@@ -388,6 +390,7 @@ impl OperationalSnapshot {
                 ("inconclusive", self.evidence.outcomes.inconclusive),
                 ("unsupported", self.evidence.outcomes.unsupported),
                 ("error", self.evidence.outcomes.error),
+                ("skipped", self.evidence.outcomes.skipped),
             ],
         );
         gauge(

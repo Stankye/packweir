@@ -33,6 +33,7 @@ fn config() -> Config {
         revision: "production-review-v1".into(),
         required: vec!["release_review".into()],
         deny_on_failure: vec!["release_review".into()],
+        agent_escalation: None,
     });
     config.repositories.insert("prod".into(), repository);
     config.access.maven_owners = vec![MavenOwnership {

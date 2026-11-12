@@ -1,5 +1,6 @@
 mod hipcheck;
 mod licenses;
+mod ossgadget;
 pub(crate) mod osv;
 mod slsa;
 
@@ -34,6 +35,15 @@ impl Execution<'_> {
         args: Vec<OsString>,
         environment: &BTreeMap<String, String>,
     ) -> Result<process::Output> {
+        self.execute_with_input(args, environment, &[]).await
+    }
+
+    async fn execute_with_input(
+        &mut self,
+        args: Vec<OsString>,
+        environment: &BTreeMap<String, String>,
+        input: &[u8],
+    ) -> Result<process::Output> {
         let remaining = self
             .deadline
             .checked_duration_since(Instant::now())
@@ -43,12 +53,12 @@ impl Execution<'_> {
             &args,
             environment,
             self.directory,
-            &[],
+            input,
             remaining,
         )
         .await?;
         tracing::debug!(program=%self.scanner.program, status=?output.status, stderr=%String::from_utf8_lossy(&output.stderr), "native scanner diagnostics");
-        self.output_bytes += output.stdout.len();
+        self.output_bytes += output.stdout.len() + output.stderr.len();
         ensure!(
             self.output_bytes <= 1024 * 1024,
             "driver combined output limit exceeded"
@@ -107,6 +117,23 @@ pub(crate) async fn run(
         output_bytes: 0,
     };
     match &scanner.driver {
+        ScannerDriver::Ossgadget {
+            deployment_root,
+            manifest,
+            mode,
+            custom_rules,
+            deny_rules,
+        } => {
+            ossgadget::run(
+                &mut execution,
+                deployment_root,
+                manifest,
+                *mode,
+                custom_rules.as_deref(),
+                deny_rules,
+            )
+            .await
+        }
         ScannerDriver::Scancode { policy } => licenses::run(&mut execution, policy).await,
         ScannerDriver::OsvObserved { databases } => {
             osv::run_observed(&mut execution, bundle, databases).await

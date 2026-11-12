@@ -1,0 +1,17 @@
+{
+  "package_version": "0.2.49",
+  "package_sha256": "0f139a32ecf35538d44cf0be7781be6194a395bc331d4084240f77f1c5b8aded",
+  "source_revision": "4063457b40211c25b41d56465d41783f2d42c5c1",
+  "backdoor_rules": {
+    "backdoor_signatures.json": "15fa5b61713d6425d2aba41a5c8313c70a778f16c8934aeef3b68795b28a7dd8",
+    "code_execution.json": "5d3af6b7b4d9693b0400223386bd73c4252a06180c787f1c36df9e8b7a18c944",
+    "crypto_currency.json": "9eea10e104205ceba091b9c312a69e4323d1abdcb7a9e8f919ae4c08603b3106",
+    "data_exfiltration.json": "0e2ca044ecbf9ebe2b558d5bbd77c72c8b2f118fd9a40e6a823b97f4c41116fc",
+    "dependency_confusion.json": "2977790b77c4be42267365ac1e520acbe340c9ba6162cbf0bb36ad30feec61aa",
+    "ioc.json": "dc6a3acc0fa4adca41cd3ff46cb4c4dec14638eacab76ab91cfba301ad2dbc85",
+    "lolbas.json": "c72d7735720a26d1760e139f2b9cc190be9b38e434ef18df43aed89b1d550c79",
+    "obfuscation.json": "d2070279c8540686f2c0ed65bff50ff467b09ccda301abda7b7030ef4fee6997",
+    "pastebin.json": "4b535608f2a854838cc1de7d35c0ce1ecb0ebf72b0765bbac363f7cc25a35c70",
+    "reverse_shell.json": "939b8c3964d6c8e975221c428e3af26bc2225982ee26c9a22770a15441837e68"
+  }
+}

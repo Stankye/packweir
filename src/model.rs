@@ -20,6 +20,8 @@ pub enum Outcome {
     Inconclusive,
     Unsupported,
     Error,
+    /// The engine deliberately did not execute a check. This is never a passing verdict.
+    Skipped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +54,19 @@ impl Evidence {
             && self.created_at <= now
             && self.expires_at > now
     }
+}
+
+/// Stable engine binding between an investigation and each supplied finding.
+/// Evidence is serialized as its typed record, rather than a database JSON object's key order.
+pub fn evidence_fingerprint(evidence: &Evidence) -> String {
+    // PostgreSQL's authoritative timestamps have microsecond precision. Canonicalize
+    // these two fields so a finding keeps its binding after a database round trip.
+    let mut canonical = evidence.clone();
+    canonical.created_at = DateTime::from_timestamp_micros(evidence.created_at.timestamp_micros())
+        .expect("representable evidence timestamp");
+    canonical.expires_at = DateTime::from_timestamp_micros(evidence.expires_at.timestamp_micros())
+        .expect("representable evidence timestamp");
+    sha256(&serde_json::to_vec(&canonical).expect("serializable evidence"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

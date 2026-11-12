@@ -598,7 +598,10 @@ async fn gate(
     let scope = artifact.scope();
     let config = state.config.delivery_fingerprint(&scope)?;
     let effective = state.config.effective_policy(&scope)?;
-    let evidence = state.store.evidence(&artifact.digest, &config).await?;
+    let evidence = state
+        .store
+        .policy_evidence(&artifact.digest, &config)
+        .await?;
     let decision = effective
         .policy
         .evaluate(&artifact.digest, &config, &evidence, Utc::now());
@@ -691,7 +694,9 @@ async fn capabilities() -> Json<Value> {
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
         "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases","nuget_immutable_releases"],"cross_repository_promotion":"sealed_copy_requires_fresh_destination_approval","nuget_signature_verification":false,"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
+        "conditional_agent_escalation":true,
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
+        "characteristics":"pinned_ossgadget_application_inspector_helper_with_bounded_text_coverage",
         "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",
         "licenses":"scancode_driver_requires_pinned_tool_and_explicit_spdx_policy",
         "sigstore_blob_signature":"cosign_driver_requires_pinned_executable_and_trust_root"},

@@ -121,6 +121,16 @@ pub struct PinnedResource {
     pub sha256: String,
 }
 
+pub const OSSGADGET_VERSION: &str = "0.2.49-helper1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OssgadgetMode {
+    Characteristic,
+    Backdoor,
+    Custom,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScannerDriver {
@@ -145,6 +155,14 @@ pub enum ScannerDriver {
     },
     Scancode {
         policy: crate::licenses::LicensePolicy,
+    },
+    Ossgadget {
+        deployment_root: String,
+        manifest: String,
+        mode: OssgadgetMode,
+        custom_rules: Option<String>,
+        #[serde(default)]
+        deny_rules: Vec<String>,
     },
     Hipcheck {
         policy: String,
@@ -343,6 +361,51 @@ impl CommandScanner {
             );
         }
         match &self.driver {
+            ScannerDriver::Ossgadget {
+                deployment_root,
+                manifest,
+                mode,
+                custom_rules,
+                deny_rules,
+            } => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "OSSGadget driver controls its environment"
+                );
+                ensure!(
+                    self.version == OSSGADGET_VERSION,
+                    "OSSGadget/helper version needs separate qualification"
+                );
+                ensure!(
+                    Path::new(deployment_root).is_absolute()
+                        && self.resources.contains_key(manifest),
+                    "OSSGadget requires an absolute deployment root and pinned manifest resource"
+                );
+                ensure!(
+                    (*mode == OssgadgetMode::Custom) == custom_rules.is_some(),
+                    "OSSGadget custom mode requires exactly one pinned custom rule resource"
+                );
+                if let Some(rules) = custom_rules {
+                    ensure!(
+                        rules != manifest && self.resources.contains_key(rules),
+                        "OSSGadget custom rules must name a separate pinned resource"
+                    );
+                }
+                ensure!(
+                    deny_rules.len() <= 256,
+                    "at most 256 OSSGadget denial rules"
+                );
+                let mut seen = BTreeSet::new();
+                ensure!(
+                    deny_rules.iter().all(|rule| !rule.is_empty()
+                        && rule.len() <= 256
+                        && rule
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        && seen.insert(rule)),
+                    "OSSGadget denial rules must be unique bounded rule identifiers"
+                );
+            }
             ScannerDriver::Scancode { policy } => {
                 ensure!(
                     self.environment.is_empty(),
@@ -580,11 +643,57 @@ impl Config {
             );
             Ok(())
         }
+        let escalation = |rule: &Option<crate::policy::AgentEscalation>| -> Result<()> {
+            let Some(rule) = rule else {
+                return Ok(());
+            };
+            ensure!(
+                self.policy.trust_agent && self.scanners.contains_key("agent"),
+                "conditional agent requirements need global trust_agent=true and a configured agent scanner"
+            );
+            ensure!(
+                (1..=64).contains(&rule.when_any.len()),
+                "agent escalation requires between 1 and 64 conditions"
+            );
+            let mut names = BTreeSet::new();
+            for condition in &rule.when_any {
+                ensure!(
+                    !condition.check.is_empty()
+                        && condition.check.len() <= 128
+                        && condition
+                            .check
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        && condition.check != "agent"
+                        && (["inventory", "archive_safety", "package_identity"]
+                            .contains(&condition.check.as_str())
+                            || self.scanners.contains_key(&condition.check)),
+                    "agent escalation inputs must name ordinary configured scanners or inventory, archive_safety, or package_identity"
+                );
+                ensure!(
+                    names.insert(&condition.check),
+                    "duplicate agent escalation input"
+                );
+                ensure!(
+                    (1..=5).contains(&condition.outcomes.len())
+                        && !condition.outcomes.contains(&crate::model::Outcome::Skipped),
+                    "agent escalation requires between 1 and 5 executed outcomes; skipped is not a trigger"
+                );
+                for (index, outcome) in condition.outcomes.iter().enumerate() {
+                    ensure!(
+                        !condition.outcomes[..index].contains(outcome),
+                        "duplicate agent escalation outcome"
+                    );
+                }
+            }
+            Ok(())
+        };
         checks(
             &self.policy.revision,
             &self.policy.required,
             &self.policy.deny_on_failure,
         )?;
+        escalation(&self.policy.agent_escalation)?;
         ensure!(self.policy_scopes.len() <= 256, "at most 256 policy scopes");
         let mut scope_names = BTreeSet::new();
         for scope in &self.policy_scopes {
@@ -641,6 +750,7 @@ impl Config {
                 &scope.policy.required,
                 &scope.policy.deny_on_failure,
             )?;
+            escalation(&scope.policy.agent_escalation)?;
             ensure!(
                 !scope.policy.required.iter().any(|c| c == "agent") || self.policy.trust_agent,
                 "scoped agent requirements need global trust_agent=true"
@@ -675,6 +785,7 @@ impl Config {
             );
             if let Some(policy) = &repo.policy {
                 checks(&policy.revision, &policy.required, &policy.deny_on_failure)?;
+                escalation(&policy.agent_escalation)?;
                 ensure!(
                     !policy.required.iter().any(|c| c == "agent") || self.policy.trust_agent,
                     "repository agent requirements need global trust_agent=true"
@@ -752,6 +863,7 @@ impl Config {
                         | ScannerDriver::OsvObserved { .. }
                         | ScannerDriver::Hipcheck { .. }
                         | ScannerDriver::Scancode { .. }
+                        | ScannerDriver::Ossgadget { .. }
                 ) || !["agent", "provenance", "required_signature"].contains(&name.as_str()),
                 "analysis drivers cannot stand in for cryptographic verification or agents"
             );

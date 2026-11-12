@@ -1,7 +1,7 @@
 use crate::model::{Artifact, Decision, Evidence};
 use anyhow::{Result, ensure};
 use serde::Serialize;
-use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use sqlx::{Executor, PgPool, Postgres, Row, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -24,6 +24,84 @@ pub struct JobStatus {
     pub attempts: i32,
     pub lease_until: Option<chrono::DateTime<chrono::Utc>>,
     pub error: Option<String>,
+}
+
+pub(crate) struct PolicyEvidenceRows {
+    pub rows: Vec<(Uuid, serde_json::Value)>,
+    pub bytes: i64,
+}
+
+/// Preserve every current record and every tie at the latest timestamp for each
+/// check. Newer expired/future records must remain visible to freshness-sensitive
+/// policy; otherwise an older current result can silently reopen the gate.
+pub(crate) async fn policy_evidence_rows<'e, E>(
+    executor: E,
+    subject: &str,
+    configuration: &str,
+    context_revision: Option<i64>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<PolicyEvidenceRows>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    // Bounds are evaluated by PostgreSQL before documents are returned. An
+    // oversized set returns one bounds-only row, never a truncated evidence set.
+    let rows = sqlx::query(
+        "WITH candidates AS MATERIALIZED (\
+         SELECT id,subject,check_name,configuration,document,created_at,expires_at,max(created_at) OVER (PARTITION BY check_name) AS latest \
+         FROM evidence WHERE subject=$1 AND configuration=$2 \
+         AND context_revision=COALESCE($3::bigint,(SELECT revision FROM contexts WHERE subject=$1),0)), \
+         selected AS MATERIALIZED (SELECT id,subject,check_name,configuration,document,created_at,expires_at FROM candidates \
+         WHERE (created_at<=$4 AND expires_at>$4) OR created_at=latest), \
+         bounds AS (SELECT count(*) AS records,COALESCE(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) \
+         SELECT bounds.records,bounds.bytes,selected.id,selected.subject,selected.check_name,selected.configuration,selected.document,selected.created_at,selected.expires_at FROM bounds \
+         LEFT JOIN selected ON bounds.records<=1024 AND bounds.bytes<=33554432 \
+         ORDER BY selected.created_at,selected.id",
+    )
+    .bind(subject)
+    .bind(configuration)
+    .bind(context_revision)
+    .bind(now)
+    .fetch_all(executor)
+    .await?;
+    let bounds = rows.first().expect("aggregate always returns bounds");
+    ensure!(
+        bounds.get::<i64, _>("records") <= 1024
+            && bounds.get::<i64, _>("bytes") <= 32 * 1024 * 1024,
+        "policy evidence exceeds 1024 records or 32 MiB"
+    );
+    let mut bytes = bounds.get::<i64, _>("bytes");
+    let mut records = Vec::new();
+    let mut projected_bytes = 0i64;
+    for row in rows {
+        let Some(id) = row.get::<Option<Uuid>, _>("id") else {
+            continue;
+        };
+        let mut finding: Evidence = serde_json::from_value(row.get("document"))?;
+        ensure!(
+            finding.subject == row.get::<String, _>("subject")
+                && finding.check == row.get::<String, _>("check_name")
+                && finding.configuration == row.get::<String, _>("configuration"),
+            "stored evidence document binding differs from authoritative columns"
+        );
+        // Indexed database columns decide validity and ordering. A stale JSON
+        // timestamp must never make a column-expired finding appear current.
+        // Fingerprints canonicalize these fields to PostgreSQL microseconds.
+        finding.created_at = row.get("created_at");
+        finding.expires_at = row.get("expires_at");
+        let document = serde_json::to_value(finding)?;
+        projected_bytes += serde_json::to_vec(&document)?.len() as i64;
+        ensure!(
+            projected_bytes <= 32 * 1024 * 1024,
+            "projected policy evidence exceeds 32 MiB"
+        );
+        records.push((id, document));
+    }
+    bytes = bytes.max(projected_bytes);
+    Ok(PolicyEvidenceRows {
+        rows: records,
+        bytes,
+    })
 }
 
 impl Store {
@@ -236,12 +314,18 @@ impl Store {
         subject: &str,
         configuration: &str,
     ) -> Result<Vec<Evidence>> {
-        // Keep the latest applicable outcome and latest expired/future outcome per check.
-        // This preserves hard failures and avoids losing a valid older check to repeated scans.
-        let rows = sqlx::query("SELECT DISTINCT ON(check_name,(created_at<=now() AND expires_at>now()),document->>'outcome') document FROM evidence WHERE subject=$1 AND configuration=$2 AND context_revision=COALESCE((SELECT revision FROM contexts WHERE subject=$1),0) ORDER BY check_name,(created_at<=now() AND expires_at>now()),document->>'outcome',created_at DESC")
-            .bind(subject).bind(configuration).fetch_all(&self.pool).await?;
-        rows.iter()
-            .map(|r| Ok(serde_json::from_value(r.get("document"))?))
+        self.policy_evidence(subject, configuration).await
+    }
+    pub async fn policy_evidence(
+        &self,
+        subject: &str,
+        configuration: &str,
+    ) -> Result<Vec<Evidence>> {
+        policy_evidence_rows(&self.pool, subject, configuration, None, chrono::Utc::now())
+            .await?
+            .rows
+            .into_iter()
+            .map(|(_, document)| Ok(serde_json::from_value(document)?))
             .collect()
     }
     pub async fn enqueue_delivery(

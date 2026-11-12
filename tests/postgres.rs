@@ -83,6 +83,7 @@ async fn delivery_scopes_isolate_aliases_and_explain_policy_while_sharing_bytes(
         revision: "review-v1".into(),
         required: vec!["review".into()],
         deny_on_failure: vec![],
+        agent_escalation: None,
     };
     let mut strict = settings.repositories["npm"].clone();
     strict.policy = Some(additions.clone());
@@ -481,6 +482,7 @@ async fn misleading_tarball_paths_and_conflicting_discovery_claims_cannot_skip_n
             revision: "strict-v1".into(),
             required: vec!["publisher_signature".into()],
             deny_on_failure: vec![],
+            agent_escalation: None,
         },
     });
     let settings = Arc::new(settings);

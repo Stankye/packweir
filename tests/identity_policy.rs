@@ -30,6 +30,7 @@ fn requirements(check: &str) -> PolicyRequirements {
         revision: "test-v1".into(),
         required: vec![check.into()],
         deny_on_failure: vec![],
+        agent_escalation: None,
     }
 }
 

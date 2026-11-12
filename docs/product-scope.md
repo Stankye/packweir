@@ -64,7 +64,7 @@ The [integration catalog](integrations.md) covers Sigstore/Cosign, Hipcheck cust
 
 Assemblyline v4 (ASv4) is a planned external analysis integration. Its selected services should produce attributable findings and extracted-file relationships, not one universal approval score. Ghidra and deobfuscation may run through dedicated helpers or services where available. Preserve transformation chains; sandbox any execution. THOR and DRAKVUF-class execution remain specialized stretch integrations. See the [scanner protocol and Assemblyline design](scanners.md).
 
-Agentic checks should be conditional escalation for bounded questions raised by earlier evidence, with an attributable model/prompt/toolset/trace and explicit cost, time, and data-sharing limits. Uncertainty and unsupported conclusions remain visible. Human review is required where policy demands it; an agent cannot override mandatory integrity or trust checks. Automatic escalation, provider integration, and isolated tool execution are not implemented.
+Agentic checks should be conditional escalation for bounded questions raised by earlier evidence, with an attributable model/prompt/toolset/trace and explicit cost, time, and data-sharing limits. Uncertainty and unsupported conclusions remain visible. Human review is required where policy demands it; an agent cannot override mandatory integrity or trust checks. [Conditional escalation](agent-escalation.md) is implemented with additive scoped triggers, exact finding-generation bindings, and freshness gates. Provider-specific adapters, provider cost/step enforcement, and OS/VM containment remain operator-provided or planned.
 
 ## Repository operations and advanced clients
 

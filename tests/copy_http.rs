@@ -82,6 +82,7 @@ impl Fixture {
             revision: "production-reviewed-v1".into(),
             required: vec!["release_review".into()],
             deny_on_failure: vec!["release_review".into()],
+            agent_escalation: None,
         });
         config.repositories.insert("prod".into(), repository);
         config.storage = StorageConfig::Fs {

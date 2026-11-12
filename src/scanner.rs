@@ -162,6 +162,70 @@ fn evidence(
     }
 }
 
+async fn scan_evidence(
+    config: &Config,
+    job: &Job,
+    name: &str,
+    scanner: &CommandScanner,
+    bytes: &[u8],
+    bundle: &serde_json::Value,
+) -> Evidence {
+    let mut result = match run(scanner, job, bytes, bundle).await {
+        Ok(output) => {
+            let outcome = if name == "agent" && !agent_binding(&output.details) {
+                Outcome::Inconclusive
+            } else {
+                output.outcome
+            };
+            let mut result = evidence(config, job, name, &scanner.version, outcome, output.details);
+            if let Some(valid_until) = output.valid_until {
+                result.expires_at = result.expires_at.min(valid_until);
+                if valid_until <= Utc::now() {
+                    result.outcome = Outcome::Inconclusive;
+                }
+            }
+            result.references = output.references;
+            result
+        }
+        Err(_) => evidence(
+            config,
+            job,
+            name,
+            &scanner.version,
+            Outcome::Error,
+            serde_json::json!({"reason":"scanner failed or timed out"}),
+        ),
+    };
+    if ["provenance", "required_signature"].contains(&name) && result.outcome == Outcome::Pass {
+        let details = &result.details;
+        let bound =
+            details.get("verified_subject").and_then(|v| v.as_str()) == Some(job.subject.as_str());
+        let trusted = details.get("trusted_identity").and_then(|v| v.as_bool()) == Some(true);
+        let verified = details.get("signature_verified").and_then(|v| v.as_bool()) == Some(true);
+        let matched = details.get("policy_matched").and_then(|v| v.as_bool()) == Some(true);
+        if !(bound && trusted && verified && matched) {
+            result.outcome = Outcome::Inconclusive;
+        }
+    }
+    result
+}
+
+fn skipped_agent(
+    config: &Config,
+    job: &Job,
+    reason: &str,
+    state: &crate::policy::EscalationState,
+) -> Evidence {
+    evidence(
+        config,
+        job,
+        "agent",
+        env!("CARGO_PKG_VERSION"),
+        Outcome::Skipped,
+        serde_json::json!({"engine_generated":true,"reason":reason,"escalation":state}),
+    )
+}
+
 pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Job) -> Result<()> {
     let scope = store.job_scope(job.id).await?;
     if let Some(scope) = &scope {
@@ -183,6 +247,10 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
             "legacy job configuration changed"
         );
     }
+    let policy = match &scope {
+        Some(scope) => config.effective_policy(scope)?.policy,
+        None => config.policy.clone(),
+    };
     let bytes = blobs.read(&job.subject).await?;
     let name = job.filename.clone();
     let inspected = tokio::task::spawn_blocking(move || {
@@ -270,55 +338,80 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
             store.identities(&job.subject).await?
         };
         let bundle = serde_json::json!({"identities":identities,"documents":documents});
-        for (name, scanner) in &config.scanners {
-            let mut e = match run(scanner, job, &bytes, &bundle).await {
-                Ok(output) => {
-                    let outcome = if name == "agent" && !agent_binding(&output.details) {
-                        Outcome::Inconclusive
-                    } else {
-                        output.outcome
-                    };
-                    let mut e =
-                        evidence(config, job, name, &scanner.version, outcome, output.details);
-                    if let Some(valid_until) = output.valid_until {
-                        e.expires_at = e.expires_at.min(valid_until);
-                        if valid_until <= Utc::now() {
-                            e.outcome = Outcome::Inconclusive;
-                        }
-                    }
-                    e.references = output.references;
-                    e
-                }
-                Err(_) => evidence(
-                    config,
-                    job,
-                    name,
-                    &scanner.version,
-                    Outcome::Error,
-                    serde_json::json!({"reason":"scanner failed or timed out"}),
-                ),
-            };
-            // Provenance adapters must explicitly provide the artifact subject and trust checks.
-            if ["provenance", "required_signature"].contains(&name.as_str())
-                && e.outcome == Outcome::Pass
-            {
-                let bound = e.details.get("verified_subject").and_then(|v| v.as_str())
-                    == Some(job.subject.as_str());
-                let trusted =
-                    e.details.get("trusted_identity").and_then(|v| v.as_bool()) == Some(true);
-                let verified = e
-                    .details
-                    .get("signature_verified")
-                    .and_then(|v| v.as_bool())
-                    == Some(true);
-                let expected =
-                    e.details.get("policy_matched").and_then(|v| v.as_bool()) == Some(true);
-                if !(bound && trusted && verified && expected) {
-                    e.outcome = Outcome::Inconclusive;
-                }
-            }
-            findings.push(e);
+        for (name, scanner) in config
+            .scanners
+            .iter()
+            .filter(|(name, _)| name.as_str() != "agent")
+        {
+            findings.push(scan_evidence(config, job, name, scanner, &bytes, &bundle).await);
         }
+        if let Some(agent) = config.scanners.get("agent") {
+            let state =
+                policy.escalation_state(&job.subject, &job.configuration, &findings, Utc::now());
+            // Once conditional scheduling is configured, scopes without a rule must
+            // not silently disclose their packages to the agent through legacy behavior.
+            let conditional = config.policy.agent_escalation.is_some()
+                || config.repositories.values().any(|repository| {
+                    repository
+                        .policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.agent_escalation.is_some())
+                })
+                || config
+                    .policy_scopes
+                    .iter()
+                    .any(|scope| scope.policy.agent_escalation.is_some());
+            let invoke = policy.agent_always_required()
+                || !conditional
+                || matches!(state, crate::policy::EscalationState::Triggered { .. });
+            if invoke {
+                let mut agent_bundle = bundle;
+                agent_bundle["subject"] = serde_json::json!(job.subject);
+                agent_bundle["configuration"] = serde_json::json!(job.configuration);
+                agent_bundle["context_revision"] = serde_json::json!(job.context_revision);
+                agent_bundle["findings"] = serde_json::to_value(&findings)?;
+                agent_bundle["escalation"] = serde_json::to_value(&state)?;
+                let mut result =
+                    scan_evidence(config, job, "agent", agent, &bytes, &agent_bundle).await;
+                // An investigation cannot outlive any finding supplied as an input.
+                if let Some(expiry) = findings.iter().map(|finding| finding.expires_at).min() {
+                    result.expires_at = result.expires_at.min(expiry);
+                    if result.expires_at <= Utc::now() && result.outcome == Outcome::Pass {
+                        result.outcome = Outcome::Inconclusive;
+                    }
+                }
+                // These dependency bindings belong to the engine, never to an adapter's
+                // self-report. Policy rejects reuse after any supplied finding changes.
+                let dependencies: BTreeMap<_, _> = findings
+                    .iter()
+                    .map(|finding| {
+                        (
+                            finding.check.clone(),
+                            crate::model::evidence_fingerprint(finding),
+                        )
+                    })
+                    .collect();
+                if !result.details.is_object() {
+                    result.details = serde_json::json!({"adapter_details":result.details});
+                }
+                result.details["packweir_inputs"] =
+                    serde_json::json!({"version":1,"findings":dependencies});
+                findings.push(result);
+            } else {
+                let reason = if policy.agent_escalation.is_none() {
+                    "scope_not_selected"
+                } else if matches!(state, crate::policy::EscalationState::Unresolved { .. }) {
+                    "condition_unresolved"
+                } else {
+                    "condition_not_triggered"
+                };
+                findings.push(skipped_agent(config, job, reason, &state));
+            }
+        }
+    } else if config.scanners.contains_key("agent") {
+        let state =
+            policy.escalation_state(&job.subject, &job.configuration, &findings, Utc::now());
+        findings.push(skipped_agent(config, job, "unsafe_archive", &state));
     }
     store.complete(job, &findings).await?;
     store
@@ -356,4 +449,81 @@ pub async fn worker(config: Arc<Config>, store: Store, blobs: BlobStore, once: b
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod future_budget_tests {
+    use super::*;
+
+    fn future_bytes<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+
+    #[tokio::test]
+    async fn scanner_futures_stay_within_stack_budget() {
+        let config = Config::load(Path::new("packweir.toml")).unwrap();
+        let scanner: CommandScanner = serde_json::from_value(serde_json::json!({
+            "program":std::env::current_exe().unwrap(),"version":"future-layout-probe"
+        }))
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(&crate::config::StorageConfig::Fs {
+            root: directory.path().to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        let store = Store {
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+                .unwrap(),
+        };
+        let job = Job {
+            id: uuid::Uuid::new_v4(),
+            subject: crate::model::sha256(b"probe"),
+            configuration: config.fingerprint(),
+            filename: "probe.txt".into(),
+            lease: uuid::Uuid::new_v4(),
+            context_revision: 0,
+        };
+        let bundle = serde_json::json!({});
+        let sizes = [
+            (
+                "executable verifier",
+                future_bytes(|| crate::process::verify_executable("unused", "unused")),
+            ),
+            (
+                "signature verifier",
+                future_bytes(|| {
+                    crate::sigstore::verify(&scanner, &job, &bundle, directory.path(), "probe")
+                }),
+            ),
+            (
+                "driver dispatch",
+                future_bytes(|| {
+                    crate::drivers::run(&scanner, &job, &bundle, directory.path(), "probe")
+                }),
+            ),
+            (
+                "scanner run",
+                future_bytes(|| run(&scanner, &job, b"probe", &bundle)),
+            ),
+            (
+                "scan evidence",
+                future_bytes(|| scan_evidence(&config, &job, "probe", &scanner, b"probe", &bundle)),
+            ),
+            (
+                "analyze",
+                future_bytes(|| analyze(&config, &store, &blobs, &job)),
+            ),
+            (
+                "worker",
+                future_bytes(|| worker(Arc::new(config), store, blobs, true)),
+            ),
+        ];
+        for (name, bytes) in sizes {
+            assert!(
+                bytes <= 16 * 1024,
+                "{name} future is {bytes} bytes; large scanner state must use heap storage"
+            );
+        }
+    }
 }

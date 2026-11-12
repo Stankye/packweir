@@ -69,6 +69,7 @@ fn assert_evidence_partition(snapshot: &OperationalSnapshot) {
             + evidence.outcomes.inconclusive
             + evidence.outcomes.unsupported
             + evidence.outcomes.error
+            + evidence.outcomes.skipped
     );
 }
 
@@ -176,6 +177,7 @@ async fn database_observations_count_queue_freshness_and_shared_references_witho
         Outcome::Inconclusive,
         Outcome::Unsupported,
         Outcome::Error,
+        Outcome::Skipped,
     ] {
         insert_evidence(
             &store.pool,
@@ -325,8 +327,9 @@ async fn database_observations_count_queue_freshness_and_shared_references_witho
     assert_eq!(result.jobs.stale_context_active, 1);
     assert!(result.jobs.oldest_queued_age_seconds >= 3600.0);
     assert!(result.jobs.oldest_queued_age_seconds < 3700.0);
-    assert_eq!(result.evidence.total, 9);
-    assert_eq!(result.evidence.current_context_time_valid, 5);
+    assert_eq!(result.evidence.total, 10);
+    assert_eq!(result.evidence.current_context_time_valid, 6);
+    assert_eq!(result.evidence.outcomes.skipped, 1);
     assert_eq!(result.evidence.expired, 1);
     assert_eq!(result.evidence.future_dated, 1);
     assert_eq!(result.evidence.invalidated_context, 1);

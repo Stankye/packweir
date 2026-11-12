@@ -18,12 +18,12 @@ use std::{
 const REPORT_LIMIT: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone)]
-struct FileInput {
-    logical: String,
-    relative: String,
-    sha256: String,
-    sha1: String,
-    size: u64,
+pub(super) struct FileInput {
+    pub(super) logical: String,
+    pub(super) relative: String,
+    pub(super) sha256: String,
+    pub(super) sha1: String,
+    pub(super) size: u64,
 }
 
 pub(super) async fn run(
@@ -335,7 +335,7 @@ fn optional_expression<'a>(value: &'a Value, key: &str) -> Result<Option<&'a str
     Ok(Some(expression))
 }
 
-fn materialize(
+pub(super) fn materialize(
     name: &str,
     bytes: &[u8],
     directory: &Path,

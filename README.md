@@ -29,6 +29,8 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Built-in SLSA Verifier, offline OSV-Scanner, and Hipcheck drivers with explicit source/package mappings, preserved findings, plugin pins, and database-bound evidence expiry.
 - Opt-in OSV scanning from observed coordinates, per-repository mutable-artifact revalidation, and authenticated operational JSON/Prometheus snapshots.
 - A pinned ScanCode driver for bounded file-level license observations and explicit SPDX-expression policy, preserving unknown/conflicting coverage for review.
+- Conditional agent investigation after ordinary findings, with additive scoped triggers, explicit skipped outcomes, exact input-generation bindings, and current-policy gating.
+- A pinned Microsoft OSSGadget/Application Inspector helper and driver for bounded characteristic/backdoor/custom-rule observations; see [Microsoft rule observations](docs/ossgadget.md) and [agent escalation](docs/agent-escalation.md).
 
 The sample configuration requires inventory and archive-safety checks only. **This is a bootstrap policy, not malware detection or a provenance guarantee.** Configure trusted adapters and add their check names to `policy.required` before depending on those capabilities. Requiring an unavailable integration keeps the artifact pending.
 

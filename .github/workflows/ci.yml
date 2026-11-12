@@ -3,6 +3,22 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  ossgadget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qualify pinned OSSGadget helper and native Rust driver
+        run: python3 tests/ossgadget/run.py
+      - name: Preserve real OSSGadget qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ossgadget-qualification
+          path: |
+            target/ossgadget/**/*.log
+            target/ossgadget/**/*.json
+          if-no-files-found: warn
   license_tool:
     runs-on: ubuntu-latest
     timeout-minutes: 35

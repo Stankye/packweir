@@ -30,6 +30,7 @@ fn config() -> Config {
         revision: "nuget-production-v1".into(),
         required: vec!["release_review".into()],
         deny_on_failure: vec!["release_review".into()],
+        agent_escalation: None,
     });
     config.repositories.insert("nuget-prod".into(), repository);
     config.access.nuget_owners = vec![NugetOwnership {
