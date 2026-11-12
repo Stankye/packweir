@@ -1,0 +1,67 @@
+{
+  "api_error_message": "",
+  "api_response": {
+    "errors": [],
+    "file_infos": {},
+    "file_tree": {},
+    "files": [
+      {
+        "name": "root.txt",
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": 48
+      }
+    ],
+    "metadata": {
+      "packweir_request_digest": "0020883a493f88348a7eaad126613656232f01ccf3bbd3ae8af46563190e2dfa",
+      "packweir_run_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "notification": {
+      "queue": null,
+      "threshold": null
+    },
+    "params": {
+      "auto_archive": false,
+      "classification": "TLP:C",
+      "deep_scan": false,
+      "delete_after_archive": false,
+      "description": "Packweir upstream ODM compatibility example",
+      "filetype_override": null,
+      "generate_alert": false,
+      "groups": [],
+      "ignore_cache": false,
+      "ignore_filtering": false,
+      "ignore_recursion_prevention": false,
+      "ignore_size": false,
+      "initial_data": null,
+      "malicious": false,
+      "max_extracted": 256,
+      "max_supplementary": 64,
+      "never_drop": false,
+      "priority": 1000,
+      "psid": null,
+      "quota_item": false,
+      "service_spec": {
+        "Extract": {}
+      },
+      "services": {
+        "excluded": [],
+        "rescan": [],
+        "resubmit": [],
+        "selected": [
+          "Extract"
+        ]
+      },
+      "submitter": "packweir-fixture",
+      "trace": false,
+      "ttl": 7,
+      "type": "USER",
+      "use_archive_alternate_dtl": false
+    },
+    "results": {},
+    "scan_key": null,
+    "sid": "00000000-0000-4000-8000-000000000001",
+    "time": "2026-11-11T19:00:00.000000Z"
+  },
+  "api_server_version": "4.7.4.stable11",
+  "api_status_code": 200
+}

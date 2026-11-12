@@ -121,6 +121,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .merge(admin)
         .merge(crate::exchange::router(state.clone()))
+        .merge(crate::remote_http::router(state.clone()))
         .merge(crate::hosted_http::router(state.clone()))
         .merge(crate::hosted_nuget::router(state.clone()))
         .merge(packages)
@@ -702,6 +703,7 @@ async fn capabilities() -> Json<Value> {
         "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases","nuget_immutable_releases"],"cross_repository_promotion":"sealed_copy_requires_fresh_destination_approval","nuget_signature_verification":false,"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "conditional_agent_escalation":true,
+        "assemblyline_v4":{"scheduling":"durable_deferred_polling","approval":"pinned_service_and_file_coverage","ambiguous_submission":"administrative_reconciliation","live_instance_qualification":false},
         "oci_evidence_exchange":{"layout_version":"1.0.0","manifest_version":"1.1.1","import_trust":"unverified_foreign_claim","approval_effect":"none","registry_transport":"external_oras_cli"},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "characteristics":"pinned_ossgadget_application_inspector_helper_with_bounded_text_coverage",
@@ -780,6 +782,8 @@ async fn inspection(state: &AppState, digest: &str, filter: &InspectionFilter) -
                 "builtin"
             } else if state.config.scanners.contains_key(&check.check) {
                 "configured_adapter"
+            } else if state.config.remote_scanners.contains_key(&check.check) {
+                "configured_remote_assemblyline"
             } else {
                 "unavailable"
             }

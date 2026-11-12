@@ -42,6 +42,11 @@ enum Commands {
         #[command(subcommand)]
         command: EvidenceCommands,
     },
+    /// Inspect remote analyses or reconcile an interrupted submission.
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommands,
+    },
     /// Inspect a local archive without executing package code.
     Inventory {
         path: PathBuf,
@@ -138,6 +143,64 @@ enum EvidenceCommands {
     Imports { digest: String },
 }
 
+#[derive(Subcommand)]
+enum RemoteCommands {
+    List {
+        digest: String,
+    },
+    Inspect {
+        digest: String,
+        id: uuid::Uuid,
+    },
+    /// Attach an operator-recovered SID; the worker must still verify all bindings.
+    Reconcile {
+        digest: String,
+        id: uuid::Uuid,
+        #[arg(long)]
+        submission: String,
+    },
+}
+
+async fn remote_command(config: &Config, command: RemoteCommands) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let (digest, id, submission) = match command {
+        RemoteCommands::List { digest } => (digest, None, None),
+        RemoteCommands::Inspect { digest, id } => (digest, Some(id), None),
+        RemoteCommands::Reconcile {
+            digest,
+            id,
+            submission,
+        } => {
+            packweir::assemblyline_http::validate_sid(&submission)?;
+            (digest, Some(id), Some(submission))
+        }
+    };
+    oci::validate_subject(&digest)?;
+    let mut path = format!("api/v1/artifacts/{digest}/remote-analysis");
+    if let Some(id) = id {
+        path.push_str(&format!("/{id}"));
+    }
+    let request = if let Some(submission) = submission {
+        path.push_str("/reconcile");
+        client
+            .post(config.public_url.join(&path)?)
+            .json(&serde_json::json!({"submission_id":submission}))
+    } else {
+        client.get(config.public_url.join(&path)?)
+    };
+    let bytes = administrative_response(
+        request.bearer_auth(std::env::var("PACKWEIR_ADMIN_TOKEN")?),
+        "remote analysis",
+    )
+    .await?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 fn bundle_summary(bundle: &oci::ValidatedBundle) -> serde_json::Value {
     serde_json::json!({
         "manifest_digest":bundle.manifest_digest(),
@@ -148,12 +211,12 @@ fn bundle_summary(bundle: &oci::ValidatedBundle) -> serde_json::Value {
     })
 }
 
-async fn evidence_response(request: reqwest::RequestBuilder) -> Result<Vec<u8>> {
+async fn administrative_response(request: reqwest::RequestBuilder, label: &str) -> Result<Vec<u8>> {
     let mut response = request.send().await?;
     let status = response.status();
     // Redirects are disabled on this client: admin credentials never follow a
     // registry-controlled Location, even on the same origin.
-    ensure!(status.is_success(), "evidence request failed: {status}");
+    ensure!(status.is_success(), "{label} request failed: {status}");
     let limit = oci::MAX_TRANSFER_BYTES;
     ensure!(
         response.content_length().is_none_or(|n| n <= limit as u64),
@@ -187,10 +250,11 @@ async fn evidence_command(config: &Config, command: EvidenceCommands) -> Result<
                 Some(id) => format!("api/v1/artifacts/{digest}/evidence-imports/{id}/export"),
                 None => format!("api/v1/artifacts/{digest}/evidence-export"),
             };
-            let bytes = evidence_response(
+            let bytes = administrative_response(
                 client
                     .get(config.public_url.join(&path)?)
                     .bearer_auth(&token),
+                "evidence",
             )
             .await?;
             let bundle = oci::parse_transfer(&bytes)?;
@@ -218,12 +282,13 @@ async fn evidence_command(config: &Config, command: EvidenceCommands) -> Result<
                 "evidence transfer exceeds size limit"
             );
             let path = format!("api/v1/artifacts/{digest}/evidence-import");
-            let bytes = evidence_response(
+            let bytes = administrative_response(
                 client
                     .post(config.public_url.join(&path)?)
                     .bearer_auth(&token)
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(body),
+                "evidence",
             )
             .await?;
             serde_json::from_slice(&bytes)?
@@ -231,10 +296,11 @@ async fn evidence_command(config: &Config, command: EvidenceCommands) -> Result<
         EvidenceCommands::Imports { digest } => {
             oci::validate_subject(&digest)?;
             let path = format!("api/v1/artifacts/{digest}/evidence-imports");
-            let bytes = evidence_response(
+            let bytes = administrative_response(
                 client
                     .get(config.public_url.join(&path)?)
                     .bearer_auth(&token),
+                "evidence",
             )
             .await?;
             serde_json::from_slice(&bytes)?
@@ -384,6 +450,7 @@ async fn main() -> Result<()> {
         }
         Commands::Hosted { command } => hosted_command(&config, command).await?,
         Commands::Evidence { command } => evidence_command(&config, command).await?,
+        Commands::Remote { command } => remote_command(&config, command).await?,
         Commands::Health => {
             let mut address = config.listen;
             if address.ip().is_unspecified() {

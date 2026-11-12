@@ -26,6 +26,8 @@ pub struct Config {
     pub repositories: BTreeMap<String, Repository>,
     #[serde(default)]
     pub scanners: BTreeMap<String, CommandScanner>,
+    #[serde(default)]
+    pub remote_scanners: BTreeMap<String, crate::assemblyline_http::RemoteScanner>,
     #[serde(default = "default_max")]
     pub max_download_bytes: usize,
     #[serde(default = "default_ttl")]
@@ -667,7 +669,8 @@ impl Config {
                         && condition.check != "agent"
                         && (["inventory", "archive_safety", "package_identity"]
                             .contains(&condition.check.as_str())
-                            || self.scanners.contains_key(&condition.check)),
+                            || self.scanners.contains_key(&condition.check)
+                            || self.remote_scanners.contains_key(&condition.check)),
                     "agent escalation inputs must name ordinary configured scanners or inventory, archive_safety, or package_identity"
                 );
                 ensure!(
@@ -872,8 +875,30 @@ impl Config {
                 "SLSA verification cannot stand in for an agent"
             );
         }
+        for (name, scanner) in &self.remote_scanners {
+            scanner.validate()?;
+            ensure!(
+                !name.is_empty()
+                    && name.len() <= 128
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                    && ![
+                        "inventory",
+                        "archive_safety",
+                        "integrity",
+                        "package_identity",
+                        "agent",
+                        "provenance",
+                        "required_signature"
+                    ]
+                    .contains(&name.as_str())
+                    && !self.scanners.contains_key(name),
+                "remote checks require a unique ordinary analysis name"
+            );
+        }
         ensure!(
-            self.scanners.len() <= 32,
+            self.scanners.len() + self.remote_scanners.len() <= 32,
             "at most 32 scanner adapters are supported"
         );
         ensure!(

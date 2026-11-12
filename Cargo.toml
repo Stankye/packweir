@@ -1,6 +1,6 @@
 [package]
 name = "packweir"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "An evidence-driven, fail-closed package registry gateway"
@@ -21,7 +21,7 @@ opendal = { version = "0.54", default-features = false, features = ["executors-t
 percent-encoding = "2"
 pep440_rs = "0.7.3"
 quick-xml = "0.38.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"

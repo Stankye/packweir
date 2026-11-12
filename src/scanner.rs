@@ -11,7 +11,7 @@ use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScannerOutput {
     pub outcome: Outcome,
@@ -226,6 +226,51 @@ fn skipped_agent(
     )
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnalysisCheckpoint {
+    version: u32,
+    subject: String,
+    configuration: String,
+    context_revision: i64,
+    findings: Vec<Evidence>,
+    bundle: serde_json::Value,
+}
+
+fn checkpoint_current(checkpoint: &AnalysisCheckpoint, job: &Job) -> Result<bool> {
+    ensure!(
+        checkpoint.version == 1
+            && checkpoint.subject == job.subject
+            && checkpoint.configuration == job.configuration
+            && checkpoint.context_revision == job.context_revision,
+        "ordinary analysis checkpoint binding mismatch"
+    );
+    ensure!(
+        checkpoint.findings.len() <= 64 && checkpoint.bundle.is_object(),
+        "invalid ordinary analysis checkpoint"
+    );
+    let checks: std::collections::BTreeSet<_> = checkpoint
+        .findings
+        .iter()
+        .map(|finding| finding.check.as_str())
+        .collect();
+    ensure!(
+        checks.len() == checkpoint.findings.len()
+            && ["inventory", "archive_safety"].iter().all(|name| checkpoint
+                .findings
+                .iter()
+                .any(|finding| finding.check == *name && finding.outcome == Outcome::Pass)),
+        "ordinary checkpoint is incomplete or lacks bounded inspection"
+    );
+    let now = Utc::now();
+    Ok(checkpoint.findings.iter().all(|finding| {
+        finding.subject == job.subject
+            && finding.configuration == job.configuration
+            && finding.created_at <= now
+            && finding.expires_at > now
+    }))
+}
+
 pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Job) -> Result<()> {
     let scope = store.job_scope(job.id).await?;
     if let Some(scope) = &scope {
@@ -251,40 +296,63 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
         Some(scope) => config.effective_policy(scope)?.policy,
         None => config.policy.clone(),
     };
-    let bytes = blobs.read(&job.subject).await?;
-    let name = job.filename.clone();
-    let inspected = tokio::task::spawn_blocking(move || {
-        inventory::inspect(&name, &bytes, inventory::Limits::default())
-    })
-    .await?;
-    let mut findings = vec![];
-    if let Some(scope) = &scope {
-        findings.push(evidence(
-            config,
-            job,
-            "package_identity",
-            env!("CARGO_PKG_VERSION"),
-            if config.identity_sufficient(scope)? {
-                Outcome::Pass
-            } else {
-                Outcome::Inconclusive
-            },
-            serde_json::json!({"package":scope.package,"trusted_source_established":false}),
-        ));
-    }
-    match inspected {
-        Ok(inventory) => {
-            for (kind, document) in [
-                ("inventory", serde_json::to_value(&inventory)?),
-                ("cyclonedx", inventory::cyclonedx(&inventory)),
-                ("spdx", inventory::spdx(&inventory)),
-            ] {
-                let digest = blobs.put(serde_json::to_vec(&document)?).await?;
-                store
-                    .document(&job.subject, kind, "artifact_observed", &digest)
-                    .await?;
-            }
+    let checkpoint = if config.remote_scanners.is_empty() {
+        None
+    } else {
+        let saved = crate::remote_analysis::checkpoint(store, job).await?;
+        let saved: Option<AnalysisCheckpoint> = saved.map(serde_json::from_value).transpose()?;
+        saved
+    };
+    let resumed = checkpoint
+        .as_ref()
+        .map(|saved| checkpoint_current(saved, job))
+        .transpose()?
+        .unwrap_or(false);
+    let (mut findings, mut saved_bundle) = match checkpoint {
+        Some(saved) => (
+            if resumed { saved.findings } else { Vec::new() },
+            Some(saved.bundle),
+        ),
+        None => (Vec::new(), None),
+    };
+    if !resumed {
+        let bytes = blobs.read(&job.subject).await?;
+        let name = job.filename.clone();
+        let inspected = tokio::task::spawn_blocking(move || {
+            inventory::inspect(&name, &bytes, inventory::Limits::default())
+        })
+        .await?;
+        if let Some(scope) = &scope {
             findings.push(evidence(
+                config,
+                job,
+                "package_identity",
+                env!("CARGO_PKG_VERSION"),
+                if config.identity_sufficient(scope)? {
+                    Outcome::Pass
+                } else {
+                    Outcome::Inconclusive
+                },
+                serde_json::json!({"package":scope.package,"trusted_source_established":false}),
+            ));
+        }
+        match inspected {
+            Ok(inventory) => {
+                // Keep the original immutable bundle through same-context retries
+                // and finding refreshes. SBOM UUID/time fields are not stable IDs.
+                if saved_bundle.is_none() {
+                    for (kind, document) in [
+                        ("inventory", serde_json::to_value(&inventory)?),
+                        ("cyclonedx", inventory::cyclonedx(&inventory)),
+                        ("spdx", inventory::spdx(&inventory)),
+                    ] {
+                        let digest = blobs.put(serde_json::to_vec(&document)?).await?;
+                        store
+                            .document(&job.subject, kind, "artifact_observed", &digest)
+                            .await?;
+                    }
+                }
+                findings.push(evidence(
                 config,
                 job,
                 "inventory",
@@ -292,58 +360,132 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
                 Outcome::Pass,
                 serde_json::json!({"files":inventory.files.len(),"coverage":inventory.coverage}),
             ));
-            findings.push(evidence(
-                config,
-                job,
-                "archive_safety",
-                env!("CARGO_PKG_VERSION"),
-                Outcome::Pass,
-                serde_json::json!({"bounded":true}),
-            ));
-        }
-        Err(_) => {
-            findings.push(evidence(
-                config,
-                job,
-                "inventory",
-                env!("CARGO_PKG_VERSION"),
-                Outcome::Fail,
-                serde_json::json!({"reason":"inventory incomplete or archive rejected"}),
-            ));
-            findings.push(evidence(
-                config,
-                job,
-                "archive_safety",
-                env!("CARGO_PKG_VERSION"),
-                Outcome::Fail,
-                serde_json::json!({"reason":"archive rejected"}),
-            ));
+                findings.push(evidence(
+                    config,
+                    job,
+                    "archive_safety",
+                    env!("CARGO_PKG_VERSION"),
+                    Outcome::Pass,
+                    serde_json::json!({"bounded":true}),
+                ));
+            }
+            Err(_) => {
+                findings.push(evidence(
+                    config,
+                    job,
+                    "inventory",
+                    env!("CARGO_PKG_VERSION"),
+                    Outcome::Fail,
+                    serde_json::json!({"reason":"inventory incomplete or archive rejected"}),
+                ));
+                findings.push(evidence(
+                    config,
+                    job,
+                    "archive_safety",
+                    env!("CARGO_PKG_VERSION"),
+                    Outcome::Fail,
+                    serde_json::json!({"reason":"archive rejected"}),
+                ));
+            }
         }
     }
     // Do not invoke deeper tools on an archive rejected by the bounded inspector.
-    if !findings.iter().any(|e| e.outcome == Outcome::Fail) {
+    if !findings.iter().any(|e| {
+        e.outcome == Outcome::Fail && ["inventory", "archive_safety"].contains(&e.check.as_str())
+    }) {
         let bytes = blobs.read(&job.subject).await?;
-        let mut documents = Vec::new();
-        for mut document in store.documents(&job.subject).await? {
-            let digest = document["blob_digest"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("document digest missing"))?;
-            let content: serde_json::Value = serde_json::from_slice(&blobs.read(digest).await?)?;
-            document["document"] = content;
-            documents.push(document);
-        }
-        let identities = if let Some(scope) = &scope {
-            vec![serde_json::to_value(scope)?]
+        let bundle = if let Some(bundle) = saved_bundle.take() {
+            bundle
         } else {
-            store.identities(&job.subject).await?
+            let mut documents = Vec::new();
+            let mut document_bytes = 0usize;
+            for mut document in store.documents(&job.subject).await? {
+                let digest = document["blob_digest"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("document digest missing"))?;
+                let raw = blobs.read_bounded(digest, 8 * 1024 * 1024).await?;
+                document_bytes = document_bytes
+                    .checked_add(raw.len())
+                    .ok_or_else(|| anyhow::anyhow!("scanner document size overflow"))?;
+                ensure!(
+                    document_bytes <= 8 * 1024 * 1024,
+                    "scanner documents exceed bundle limit"
+                );
+                let content: serde_json::Value = serde_json::from_slice(&raw)?;
+                document["document"] = content;
+                documents.push(document);
+            }
+            let identities = if let Some(scope) = &scope {
+                vec![serde_json::to_value(scope)?]
+            } else {
+                store.identities(&job.subject).await?
+            };
+            serde_json::json!({"identities":identities,"documents":documents})
         };
-        let bundle = serde_json::json!({"identities":identities,"documents":documents});
-        for (name, scanner) in config
-            .scanners
-            .iter()
-            .filter(|(name, _)| name.as_str() != "agent")
-        {
-            findings.push(scan_evidence(config, job, name, scanner, &bytes, &bundle).await);
+        if !resumed {
+            for (name, scanner) in config
+                .scanners
+                .iter()
+                .filter(|(name, _)| name.as_str() != "agent")
+            {
+                findings.push(scan_evidence(config, job, name, scanner, &bytes, &bundle).await);
+            }
+            if !config.remote_scanners.is_empty() {
+                let checkpoint = AnalysisCheckpoint {
+                    version: 1,
+                    subject: job.subject.clone(),
+                    configuration: job.configuration.clone(),
+                    context_revision: job.context_revision,
+                    findings: findings.clone(),
+                    bundle: bundle.clone(),
+                };
+                crate::remote_analysis::save_checkpoint(
+                    store,
+                    job,
+                    &serde_json::to_value(checkpoint)?,
+                )
+                .await?;
+            }
+        }
+        let mut next_poll: Option<chrono::DateTime<Utc>> = None;
+        let bundle_digest = crate::model::sha256(&serde_json::to_vec(&bundle)?);
+        for (name, remote) in &config.remote_scanners {
+            match Box::pin(crate::assemblyline_http::advance(
+                store,
+                job,
+                name,
+                remote.assemblyline(),
+                &bytes,
+                &bundle_digest,
+            ))
+            .await?
+            {
+                crate::assemblyline_http::Step::Pending(next) => {
+                    next_poll = Some(next_poll.map_or(next, |current| current.min(next)));
+                }
+                crate::assemblyline_http::Step::Finished(output) => {
+                    let mut result = evidence(
+                        config,
+                        job,
+                        name,
+                        &remote.assemblyline().profile_revision,
+                        output.outcome,
+                        output.details,
+                    );
+                    if let Some(until) = output.valid_until {
+                        result.expires_at = result.expires_at.min(until);
+                        if until <= Utc::now() {
+                            result.outcome = Outcome::Inconclusive;
+                        }
+                    }
+                    result.references = output.references;
+                    findings.push(result);
+                }
+            }
+        }
+        if let Some(next) = next_poll {
+            crate::remote_analysis::defer(store, job, next).await?;
+            return Ok(());
         }
         if let Some(agent) = config.scanners.get("agent") {
             let state =
@@ -431,6 +573,13 @@ pub async fn worker(config: Arc<Config>, store: Store, blobs: BlobStore, once: b
         .values()
         .map(|s| s.timeout_seconds)
         .fold(0u64, u64::saturating_add)
+        .saturating_add(
+            config
+                .remote_scanners
+                .values()
+                .map(|s| s.assemblyline().request_timeout_seconds.saturating_mul(4))
+                .sum::<u64>(),
+        )
         .saturating_add(300)
         .min(i32::MAX as u64) as i32;
     loop {

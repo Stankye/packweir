@@ -1,0 +1,36 @@
+{
+  "api_error_message": "",
+  "api_response": {
+    "classification": "TLP:C",
+    "filtered": false,
+    "partial": false,
+    "supplementary": [],
+    "tree": {
+      "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee": {
+        "children": {
+          "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77": {
+            "children": {},
+            "name": [
+              "child.txt"
+            ],
+            "score": 0,
+            "sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77",
+            "size": 59,
+            "truncated": false,
+            "type": "text/plain"
+          }
+        },
+        "name": [
+          "root.txt"
+        ],
+        "score": 0,
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": 48,
+        "truncated": false,
+        "type": "text/plain"
+      }
+    }
+  },
+  "api_server_version": "4.7.4.stable11",
+  "api_status_code": 200
+}

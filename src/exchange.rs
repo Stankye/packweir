@@ -157,20 +157,25 @@ pub async fn snapshot_bundle(state: &AppState, subject: &str) -> Result<Validate
         "SELECT to_jsonb(d) AS document FROM (SELECT DISTINCT ON(repository,configuration) * FROM decisions WHERE subject=$1 ORDER BY repository,configuration,created_at DESC,id DESC) d",
         1024, 32 * 1024 * 1024).await?;
     let jobs = rows(&mut tx, subject,
-        "SELECT to_jsonb(j)-'lease_token' AS document FROM jobs j WHERE subject=$1 ORDER BY configuration,id",
+        "SELECT to_jsonb(j)-'lease_token'-'analysis_checkpoint' AS document FROM jobs j WHERE subject=$1 ORDER BY configuration,id",
         256, 1024 * 1024).await?;
+    let remote_analyses = rows(&mut tx,subject,
+        "SELECT to_jsonb(r)-'submission_token'-'submission_lease'-'output' AS document FROM remote_analysis r WHERE subject=$1 AND context_revision=COALESCE((SELECT revision FROM contexts WHERE subject=$1),0) ORDER BY created_at,id",
+        256,1024*1024).await?;
     let mut snapshot = json!({
         "context_revision":revision,
         "engine_configuration":state.config.fingerprint(),
         "database_snapshot":{"isolation":"repeatable_read","time":now},
         "artifact_scopes":[], "evidence":evidence,"documents":documents,
-        "recorded_decisions":decisions,"jobs":jobs,
+        "recorded_decisions":decisions,"jobs":jobs,"remote_analyses":remote_analyses,
         "omissions":[
             {"domain":"original_package_bytes","reason":"not included in evidence exchange v1"},
             {"domain":"evidence_prior_contexts","reason":"only the captured source context is exported"},
             {"domain":"decision_history","reason":"latest recorded decision per repository and configuration only"},
             {"domain":"external_imports","reason":"foreign imports are not local evidence or scanner inputs"},
             {"domain":"job_lease_tokens","reason":"operational credentials omitted"}
+            ,{"domain":"ordinary_analysis_checkpoints","reason":"temporary worker cache is not committed evidence"}
+            ,{"domain":"remote_analysis_outputs","reason":"remote ledger summaries included; committed findings are in evidence"}
         ]
     });
     bounded_envelope_part(&snapshot)?;

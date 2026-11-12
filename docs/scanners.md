@@ -57,9 +57,9 @@ Built-in drivers cover Sigstore blob signatures, source-bound SLSA Verifier chec
 
 `provenance` and `required_signature` passing results must include `verified_subject` equal to the requested digest and booleans `trusted_identity`, `signature_verified`, and `policy_matched`, all true. These are trusted-adapter reports, not cryptographic proofs checked by the gateway. A verifier must actually perform those checks before reporting them. Merely parsing SLSA JSON must return inconclusive.
 
-## Planned Assemblyline v4 integration
+## Native Assemblyline v4 integration
 
-Assemblyline v4 is an external analysis platform with an operator-selected set of services. The first integration can use an operator-owned protocol bridge. A later native asynchronous backend should submit work, persist its correlation state, and collect results without holding a gateway request or a scan lease open for the entire external analysis. This backend and its scheduling changes are not implemented.
+Assemblyline v4 is an external analysis platform with an operator-selected set of services. Packweir 0.9.0 adds an experimental [native asynchronous client](assemblyline.md), with durable submission intent/SIDs, ordinary-analysis checkpoints, deferred queue polling, context/lease fencing, and administrative reconciliation. The gateway and worker do not hold a lease for the entire remote analysis. Controlled HTTP/SQL/worker-CLI tests use pinned upstream schema fixtures; qualification against a live instance remains required.
 
 The integration must retain the original artifact digest, submission identifier, selected service/configuration revisions, report references, and parent/child file relationships. Normalize service findings independently, preserving partial results, skipped services, errors, and timeouts. A successful submission or low aggregate score is not proof that every required check ran. Results must still match the active evidence context before affecting delivery.
 

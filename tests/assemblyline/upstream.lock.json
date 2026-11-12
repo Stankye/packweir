@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-11-11",
+  "scope": "Assemblyline v4 native REST wire compatibility; not live instance qualification",
+  "repositories": [
+    {
+      "name": "assemblyline-ui",
+      "url": "https://github.com/CybercentreCanada/assemblyline-ui",
+      "tag": "v4.7.4.stable11",
+      "commit": "844ccb3f2d53214c8822a46e782b06bc3ef2581d",
+      "committed_at": "2026-08-24T16:30:10-04:00",
+      "files": [
+        "assemblyline_ui/api/base.py",
+        "assemblyline_ui/api/v4/submit.py",
+        "assemblyline_ui/api/v4/submission.py",
+        "assemblyline_ui/api/v4/service.py",
+        "assemblyline_ui/helper/submission.py",
+        "test/test_submission.py"
+      ]
+    },
+    {
+      "name": "assemblyline-base",
+      "url": "https://github.com/CybercentreCanada/assemblyline-base",
+      "tag": "v4.7.4.stable11",
+      "commit": "abb23625186247802c1f0376a5c79a567120f78d",
+      "committed_at": "2026-08-24T16:29:19-04:00",
+      "files": [
+        "assemblyline/odm/messages/submission.py",
+        "assemblyline/odm/models/submission.py",
+        "assemblyline/odm/models/result.py",
+        "assemblyline/odm/models/error.py",
+        "assemblyline/odm/models/file.py",
+        "assemblyline/datastore/helper.py",
+        "assemblyline/common/caching.py"
+      ]
+    },
+    {
+      "name": "assemblyline_client",
+      "url": "https://github.com/CybercentreCanada/assemblyline_client",
+      "tag": "v4.10.1",
+      "commit": "928976a8f94b02ef08250891e10614cb9a8c5e0d",
+      "committed_at": "2026-08-24T21:15:11Z",
+      "files": [
+        "assemblyline_client/v4_client/module/submit.py",
+        "assemblyline_client/v4_client/module/submission.py"
+      ]
+    }
+  ],
+  "official_documentation": [
+    "https://cybercentrecanada.github.io/assemblyline4_docs/integration/rest/",
+    "https://cybercentrecanada.github.io/assemblyline4_docs/integration/authentication/",
+    "https://cybercentrecanada.github.io/assemblyline4_docs/integration/ingestion_method/"
+  ],
+  "generator": {
+    "path": "tests/assemblyline/generate_upstream_fixtures.py",
+    "python": "3.12",
+    "validated_dependencies": {
+      "arrow": "1.4.0",
+      "PyYAML": "6.0.3",
+      "elastic-apm": "6.26.2",
+      "hauntedhouse": "0.1.10",
+      "python-baseconv": "1.2.2",
+      "chardet": "7.7.0"
+    },
+    "fixture_origin": "Deterministic input records validated and serialized by pinned upstream ODM models, then transformed as the pinned REST endpoints do. Not a server capture."
+  }
+}

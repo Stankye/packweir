@@ -338,7 +338,7 @@ impl Store {
             .bind(&artifact.digest)
             .execute(&self.pool)
             .await?;
-        sqlx::query("INSERT INTO jobs(id,subject,configuration,filename,context_revision,engine_configuration,scope) VALUES($1,$2,$3,$4,(SELECT revision FROM contexts WHERE subject=$2),$5,$6) ON CONFLICT(subject,configuration) DO UPDATE SET state=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 'queued' ELSE jobs.state END,attempts=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 0 ELSE jobs.attempts END,context_revision=EXCLUDED.context_revision")
+        sqlx::query("INSERT INTO jobs(id,subject,configuration,filename,context_revision,engine_configuration,scope) VALUES($1,$2,$3,$4,(SELECT revision FROM contexts WHERE subject=$2),$5,$6) ON CONFLICT(subject,configuration) DO UPDATE SET state=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 'queued' ELSE jobs.state END,attempts=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 0 ELSE jobs.attempts END,not_before=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN clock_timestamp() ELSE jobs.not_before END,analysis_checkpoint=CASE WHEN jobs.context_revision<>EXCLUDED.context_revision THEN NULL ELSE jobs.analysis_checkpoint END,checkpoint_context_revision=CASE WHEN jobs.context_revision<>EXCLUDED.context_revision THEN NULL ELSE jobs.checkpoint_context_revision END,context_revision=EXCLUDED.context_revision")
             .bind(Uuid::new_v4()).bind(&artifact.digest).bind(configuration).bind(&artifact.filename).bind(engine).bind(serde_json::to_value(artifact.scope())?).execute(&self.pool).await?;
         Ok(())
     }
@@ -379,7 +379,7 @@ impl Store {
             .bind(subject)
             .execute(&self.pool)
             .await?;
-        sqlx::query("INSERT INTO jobs(id,subject,configuration,filename,context_revision) VALUES($1,$2,$3,$4,(SELECT revision FROM contexts WHERE subject=$2)) ON CONFLICT(subject,configuration) DO UPDATE SET state=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 'queued' ELSE jobs.state END, attempts=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 0 ELSE jobs.attempts END,context_revision=EXCLUDED.context_revision")
+        sqlx::query("INSERT INTO jobs(id,subject,configuration,filename,context_revision) VALUES($1,$2,$3,$4,(SELECT revision FROM contexts WHERE subject=$2)) ON CONFLICT(subject,configuration) DO UPDATE SET state=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 'queued' ELSE jobs.state END, attempts=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN 0 ELSE jobs.attempts END,not_before=CASE WHEN jobs.state IN ('complete','failed') OR jobs.context_revision<>EXCLUDED.context_revision THEN clock_timestamp() ELSE jobs.not_before END,analysis_checkpoint=CASE WHEN jobs.context_revision<>EXCLUDED.context_revision THEN NULL ELSE jobs.analysis_checkpoint END,checkpoint_context_revision=CASE WHEN jobs.context_revision<>EXCLUDED.context_revision THEN NULL ELSE jobs.checkpoint_context_revision END,context_revision=EXCLUDED.context_revision")
             .bind(Uuid::new_v4()).bind(subject).bind(configuration).bind(filename).execute(&self.pool).await?;
         Ok(())
     }
@@ -388,7 +388,7 @@ impl Store {
         sqlx::query("UPDATE jobs SET state='failed',error='lease expired after maximum attempts',lease_until=NULL WHERE (configuration=$1 OR engine_configuration=$1) AND state='running' AND lease_until<now() AND attempts>=3")
             .bind(configuration).execute(&self.pool).await?;
         let lease = Uuid::new_v4();
-        let row = sqlx::query("UPDATE jobs SET state='running', lease_token=$2, lease_until=now()+make_interval(secs => $3), attempts=attempts+1 WHERE id=(SELECT id FROM jobs WHERE (configuration=$1 OR engine_configuration=$1) AND attempts<3 AND (state='queued' OR (state='running' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subject,configuration,filename,context_revision")
+        let row = sqlx::query("UPDATE jobs SET state='running', lease_token=$2, lease_until=now()+make_interval(secs => $3), attempts=attempts+1 WHERE id=(SELECT id FROM jobs WHERE (configuration=$1 OR engine_configuration=$1) AND attempts<3 AND ((state='queued' AND not_before<=now()) OR (state='running' AND lease_until<now())) ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,subject,configuration,filename,context_revision")
             .bind(configuration).bind(lease).bind(seconds as f64).fetch_optional(&self.pool).await?;
         Ok(row.map(|r| Job {
             id: r.get("id"),
@@ -517,11 +517,15 @@ impl Store {
     }
     pub async fn documents(&self, subject: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
-            "SELECT id,kind,origin,blob_digest FROM documents WHERE subject=$1 ORDER BY created_at",
+            "SELECT id,kind,origin,blob_digest FROM documents WHERE subject=$1 ORDER BY created_at,id LIMIT 257",
         )
         .bind(subject)
         .fetch_all(&self.pool)
         .await?;
+        ensure!(
+            rows.len() <= 256,
+            "artifact documents exceed bounded complete-set limit"
+        );
         Ok(rows.iter().map(|r| serde_json::json!({"id":r.get::<Uuid,_>("id"),"kind":r.get::<String,_>("kind"),"origin":r.get::<String,_>("origin"),"blob_digest":r.get::<String,_>("blob_digest")})).collect())
     }
     pub async fn identities(&self, subject: &str) -> Result<Vec<serde_json::Value>> {

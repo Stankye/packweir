@@ -1,4 +1,6 @@
 pub mod access;
+pub mod assemblyline;
+pub mod assemblyline_http;
 pub mod bounds;
 pub mod config;
 mod drivers;
@@ -20,6 +22,8 @@ pub mod operations;
 pub mod policy;
 mod process;
 pub mod registry;
+pub mod remote_analysis;
+pub mod remote_http;
 pub mod scanner;
 mod sigstore;
 pub mod storage;

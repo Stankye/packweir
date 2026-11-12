@@ -1,0 +1,15 @@
+{
+  "base_commit": "abb23625186247802c1f0376a5c79a567120f78d",
+  "child_sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77",
+  "configuration_key": "cLqpA2rjRLeB",
+  "fixture_kind": "generated_upstream_odm_compatibility_not_live_capture",
+  "now": "2026-11-11T19:01:00.000000Z",
+  "request_digest": "0020883a493f88348a7eaad126613656232f01ccf3bbd3ae8af46563190e2dfa",
+  "run_id": "00000000-0000-4000-8000-000000000002",
+  "service": "Extract",
+  "service_tool_version": null,
+  "service_version": "4.8.0.stable0",
+  "subject_sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+  "submission_id": "00000000-0000-4000-8000-000000000001",
+  "warning": "Service/configuration values are schema test inputs, not a qualified deployment."
+}

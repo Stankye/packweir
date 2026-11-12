@@ -771,7 +771,7 @@ fn unique_blob_map<'de, D: Deserializer<'de>>(
 }
 
 /// serde_json::Value normally collapses repeated keys; evidence must reject them.
-fn strict_json(bytes: &[u8]) -> Result<Value> {
+pub(crate) fn strict_json(bytes: &[u8]) -> Result<Value> {
     struct UniqueValue(Value);
     impl<'de> Deserialize<'de> for UniqueValue {
         fn deserialize<D: Deserializer<'de>>(

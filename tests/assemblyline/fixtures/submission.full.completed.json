@@ -1,0 +1,296 @@
+{
+  "api_error_message": "",
+  "api_response": {
+    "archive_ts": null,
+    "archived": false,
+    "classification": "TLP:C",
+    "error_count": 0,
+    "errors": {},
+    "expiry_ts": "2026-11-18T19:00:00.000000Z",
+    "file_count": 2,
+    "file_infos": {
+      "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77": {
+        "archive_ts": null,
+        "ascii": "Packweir Assemblyline schema compatibility extracted child",
+        "classification": "TLP:C",
+        "comments": [],
+        "entropy": 4.0,
+        "expiry_ts": "2026-11-18T19:00:00.000000Z",
+        "from_archive": false,
+        "hex": "5061636b7765697220417373656d626c796c696e6520736368656d6120636f6d7061746962696c69747920657874726163746564206368696c640a",
+        "is_section_image": false,
+        "is_supplementary": false,
+        "label_categories": {
+          "attribution": [],
+          "info": [],
+          "technique": []
+        },
+        "labels": [],
+        "magic": "ASCII text",
+        "md5": "e005e5c20374c6bcc0d7590cb68aba8b",
+        "mime": "text/plain",
+        "seen": {
+          "count": 1,
+          "first": "2026-11-11T19:00:00.000000Z",
+          "last": "2026-11-11T19:00:00.000000Z"
+        },
+        "sha1": "a303c8784951ba0a01c00c9658bc056b449fe17d",
+        "sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77",
+        "size": 59,
+        "ssdeep": "3::",
+        "tlsh": null,
+        "type": "text/plain",
+        "uri_info": null
+      },
+      "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee": {
+        "archive_ts": null,
+        "ascii": "Packweir Assemblyline schema compatibility root",
+        "classification": "TLP:C",
+        "comments": [],
+        "entropy": 4.0,
+        "expiry_ts": "2026-11-18T19:00:00.000000Z",
+        "from_archive": false,
+        "hex": "5061636b7765697220417373656d626c796c696e6520736368656d6120636f6d7061746962696c69747920726f6f740a",
+        "is_section_image": false,
+        "is_supplementary": false,
+        "label_categories": {
+          "attribution": [],
+          "info": [],
+          "technique": []
+        },
+        "labels": [],
+        "magic": "ASCII text",
+        "md5": "7a34f9434303bde6e97178721b01882f",
+        "mime": "text/plain",
+        "seen": {
+          "count": 1,
+          "first": "2026-11-11T19:00:00.000000Z",
+          "last": "2026-11-11T19:00:00.000000Z"
+        },
+        "sha1": "c4b88d2b223237e610fd69ae3cd76be0fe8eb9ba",
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": 48,
+        "ssdeep": "3::",
+        "tlsh": null,
+        "type": "text/plain",
+        "uri_info": null
+      }
+    },
+    "file_tree": {
+      "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee": {
+        "children": {
+          "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77": {
+            "children": {},
+            "name": [
+              "child.txt"
+            ],
+            "score": 0,
+            "sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77",
+            "size": 59,
+            "truncated": false,
+            "type": "text/plain"
+          }
+        },
+        "name": [
+          "root.txt"
+        ],
+        "score": 0,
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": 48,
+        "truncated": false,
+        "type": "text/plain"
+      }
+    },
+    "files": [
+      {
+        "name": "root.txt",
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": 48
+      }
+    ],
+    "from_archive": false,
+    "max_score": 0,
+    "metadata": {
+      "packweir_request_digest": "0020883a493f88348a7eaad126613656232f01ccf3bbd3ae8af46563190e2dfa",
+      "packweir_run_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "missing_error_keys": [],
+    "missing_file_keys": [],
+    "missing_result_keys": [],
+    "params": {
+      "auto_archive": false,
+      "classification": "TLP:C",
+      "deep_scan": false,
+      "delete_after_archive": false,
+      "description": "Packweir upstream ODM compatibility example",
+      "filetype_override": null,
+      "generate_alert": false,
+      "groups": [],
+      "ignore_cache": false,
+      "ignore_filtering": false,
+      "ignore_recursion_prevention": false,
+      "ignore_size": false,
+      "initial_data": null,
+      "malicious": false,
+      "max_extracted": 256,
+      "max_supplementary": 64,
+      "never_drop": false,
+      "priority": 1000,
+      "psid": null,
+      "quota_item": false,
+      "service_spec": {
+        "Extract": {}
+      },
+      "services": {
+        "excluded": [],
+        "rescan": [],
+        "resubmit": [],
+        "selected": [
+          "Extract"
+        ]
+      },
+      "submitter": "packweir-fixture",
+      "trace": false,
+      "ttl": 7,
+      "type": "USER",
+      "use_archive_alternate_dtl": false
+    },
+    "results": {
+      "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77.Extract.v4_8_0_stable0.cLqpA2rjRLeB": {
+        "archive_ts": null,
+        "classification": "TLP:C",
+        "created": "2026-11-11T19:00:02.000000Z",
+        "drop_file": false,
+        "expiry_ts": "2026-11-18T19:00:00.000000Z",
+        "from_archive": false,
+        "partial": false,
+        "response": {
+          "extracted": [],
+          "milestones": {
+            "service_completed": "2026-11-11T19:00:02.000000Z",
+            "service_started": "2026-11-11T19:00:01.000000Z"
+          },
+          "service_context": null,
+          "service_debug_info": null,
+          "service_name": "Extract",
+          "service_tool_version": null,
+          "service_version": "4.8.0.stable0",
+          "supplementary": []
+        },
+        "result": {
+          "score": 0,
+          "sections": [
+            {
+              "auto_collapse": false,
+              "body": "Observation recorded.",
+              "body_config": null,
+              "body_format": "TEXT",
+              "classification": "TLP:C",
+              "depth": 0,
+              "heuristic": null,
+              "promote_to": null,
+              "safelisted_tags": {},
+              "tags": {
+                "attribution": null,
+                "av": null,
+                "cert": null,
+                "code": null,
+                "dynamic": null,
+                "file": null,
+                "info": null,
+                "network": null,
+                "source": null,
+                "technique": null,
+                "vector": null
+              },
+              "title_text": "Schema compatibility example"
+            }
+          ]
+        },
+        "sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77",
+        "size": null,
+        "type": null
+      },
+      "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee.Extract.v4_8_0_stable0.cLqpA2rjRLeB": {
+        "archive_ts": null,
+        "classification": "TLP:C",
+        "created": "2026-11-11T19:00:02.000000Z",
+        "drop_file": false,
+        "expiry_ts": "2026-11-18T19:00:00.000000Z",
+        "from_archive": false,
+        "partial": false,
+        "response": {
+          "extracted": [
+            {
+              "allow_dynamic_recursion": false,
+              "classification": "TLP:C",
+              "description": "Extracted schema example",
+              "is_section_image": false,
+              "name": "child.txt",
+              "parent_relation": "EXTRACTED",
+              "sha256": "dce66b8e5537464509af19f7ba5407e3dc214a107d4ea48cc9a0fca2f2f32f77"
+            }
+          ],
+          "milestones": {
+            "service_completed": "2026-11-11T19:00:02.000000Z",
+            "service_started": "2026-11-11T19:00:01.000000Z"
+          },
+          "service_context": null,
+          "service_debug_info": null,
+          "service_name": "Extract",
+          "service_tool_version": null,
+          "service_version": "4.8.0.stable0",
+          "supplementary": []
+        },
+        "result": {
+          "score": 0,
+          "sections": [
+            {
+              "auto_collapse": false,
+              "body": "Observation recorded.",
+              "body_config": null,
+              "body_format": "TEXT",
+              "classification": "TLP:C",
+              "depth": 0,
+              "heuristic": null,
+              "promote_to": null,
+              "safelisted_tags": {},
+              "tags": {
+                "attribution": null,
+                "av": null,
+                "cert": null,
+                "code": null,
+                "dynamic": null,
+                "file": null,
+                "info": null,
+                "network": null,
+                "source": null,
+                "technique": null,
+                "vector": null
+              },
+              "title_text": "Schema compatibility example"
+            }
+          ]
+        },
+        "sha256": "dd69b622aa972ed9066f59be458d8fd12f63dab470b0209848dfcb3a349fd5ee",
+        "size": null,
+        "type": null
+      }
+    },
+    "scan_key": null,
+    "sid": "00000000-0000-4000-8000-000000000001",
+    "state": "completed",
+    "times": {
+      "completed": "2026-11-11T19:00:02.000000Z",
+      "submitted": "2026-11-11T19:00:00.000000Z"
+    },
+    "to_be_deleted": false,
+    "tracing_events": [],
+    "verdict": {
+      "malicious": [],
+      "non_malicious": []
+    }
+  },
+  "api_server_version": "4.7.4.stable11",
+  "api_status_code": 200
+}

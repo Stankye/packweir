@@ -21,6 +21,7 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Bounded upstream downloads with exact-origin allowlists, redirect validation, DNS pinning, and private-address rejection.
 - Content-addressed OpenDAL filesystem/S3 storage, verified reads, and optional post-delivery retention.
 - [OCI evidence export/import](docs/oci-exchange.md), offline layout validation, immutable foreign-claim receipts, and real ORAS interoperability qualification.
+- Experimental [Assemblyline v4 analysis](docs/assemblyline.md): durable submissions, deferred polling, pinned per-service/file coverage, and administrative recovery of ambiguous uploads.
 - PostgreSQL-backed artifacts, leased jobs, evidence, source-document revisions, decisions, and audit events.
 - Fail-closed policy evaluation: a missing, unsupported, failed, expired, or inconclusive required check cannot approve delivery.
 - Bounded archive inventory, native-binary identification, and observed CycloneDX 1.6/SPDX 2.3 file inventories.
@@ -108,6 +109,9 @@ The administrative endpoints below require `Authorization: Bearer <admin-token>`
 | GET | `/api/v1/artifacts/{digest}/evidence-imports` | List immutable import receipts |
 | GET | `/api/v1/artifacts/{digest}/evidence-imports/{id}` | Inspect one import receipt |
 | GET | `/api/v1/artifacts/{digest}/evidence-imports/{id}/export` | Reexport the original immutable imported transfer |
+| GET | `/api/v1/artifacts/{digest}/remote-analysis` | Inspect bounded remote analysis history |
+| GET | `/api/v1/artifacts/{digest}/remote-analysis/{id}` | Inspect one durable remote request and result |
+| POST | `/api/v1/artifacts/{digest}/remote-analysis/{id}/reconcile` | Attach an operator-recovered SID for worker verification; grants no approval |
 | POST | `/api/v1/prefetch` | Stage a repository-relative package path |
 
 Document ingestion accepts `{"kind":"sbom","origin":"publisher_declared","document":{...}}`. Kinds are `sbom`, `attestation`, `sigstore_bundle`, `vex`, and `lockfile`; external origins are `publisher_declared` and `client_resolved`. Ingested SBOMs receive envelope checks only, not full schema or semantic validation. Ingesting a signature or provenance statement does not verify it or approve an artifact. See [tool integrations](docs/integrations.md) to configure and require Sigstore verification.
