@@ -18,6 +18,7 @@ import s3
 ROOT = Path("/fixtures")
 ORIGIN = "http://upstream:8081"
 FILES = {}
+REDIRECTS = {}
 CATALOG = []
 LOCK = threading.Lock()
 
@@ -103,6 +104,8 @@ def fixtures():
     add("nuget", "flat/packweir.fixture/1.0.0/packweir.fixture.1.0.0.nupkg", nupkg)
     document("/nuget/index.json", {"version": "3.0.0", "resources": [{"@id": ORIGIN + "/nuget/flat/", "@type": "PackageBaseAddress/3.0.0"}]})
     document("/nuget/flat/packweir.fixture/index.json", {"versions": ["1.0.0"]})
+    # The gateway must reserve private identities across redirects before fetching.
+    REDIRECTS["/nuget/flat/redirect.fixture/index.json"] = ORIGIN + "/nuget/flat/Packweir.Private.Fixture/index.json"
     bad = archive({"../escape": b"blocked fixture"})
     add("npm", "blocked/-/blocked-1.0.0.tgz", bad)
     CATALOG[-1]["denied"] = True
@@ -128,6 +131,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     output.write(json.dumps({"path": path, "authorization_received": leaked}) + "\n")
             if leaked:
                 data, content_type, status = b"client credential leak", "text/plain", 500
+            elif path in REDIRECTS:
+                self.send_response(302)
+                self.send_header("Location", REDIRECTS[path])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             elif path in FILES:
                 data, content_type = FILES[path]
                 status = 200

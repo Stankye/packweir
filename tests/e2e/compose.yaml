@@ -66,6 +66,14 @@ services:
       - ./:/tests:ro
       - fixtures:/fixtures
 
+  nuget-fixture:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    command: [sh, /tests/nuget-fixture.sh]
+    network_mode: none
+    volumes:
+      - ./:/tests:ro
+      - fixtures:/fixtures
+
   upstream:
     image: python:3.13-slim-bookworm
     command: [python, /tests/upstream.py]
@@ -73,6 +81,8 @@ services:
       STORAGE: ${PACKWEIR_E2E_STORAGE:-fs}
     depends_on:
       java-fixture:
+        condition: service_completed_successfully
+      nuget-fixture:
         condition: service_completed_successfully
       object-store:
         condition: service_started
@@ -200,6 +210,24 @@ services:
     <<: *client
     image: mcr.microsoft.com/dotnet/sdk:10.0
     command: [sh, /tests/clients/nuget.sh]
+
+  nuget-publish:
+    <<: *client
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    command: [sh, /tests/clients/nuget-publish.sh]
+    environment:
+      PACKWEIR_PUBLISH_TOKEN: fixture-publish-token-000000000000000
+    volumes:
+      - ./:/tests:ro
+      - fixtures:/fixtures:ro
+
+  nuget-hosted:
+    <<: *client
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    command: [sh, /tests/clients/nuget-hosted.sh]
+    volumes:
+      - ./:/tests:ro
+      - fixtures:/fixtures:ro
 
 networks:
   backend:

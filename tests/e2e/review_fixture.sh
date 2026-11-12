@@ -26,4 +26,7 @@ for extension in jar pom; do
     expected='{"filename":"'"$filename"'","origin":"http://gateway:8080/r/maven-prod/dev/packweir/private/hosted-fixture/1.0.0/'"$filename"'","package":{"basis":"hosted_coordinates_declared","ecosystem":"maven","name":"dev.packweir.private:hosted-fixture","namespace":"dev.packweir.private","purl":"pkg:maven/dev.packweir.private/hosted-fixture@1.0.0","version":"1.0.0"},"repository":"maven-prod"}]}'
     if test "$identities" = "$expected" && test "$request_filename" = "$filename"; then outcome=pass; fi
 done
+filename=packweir.private.fixture.1.0.0.nupkg
+expected='{"filename":"'"$filename"'","origin":"http://gateway:8080/r/nuget-prod/flatcontainer/packweir.private.fixture/1.0.0/'"$filename"'","package":{"basis":"hosted_coordinates_declared","ecosystem":"nuget","name":"packweir.private.fixture","namespace":null,"purl":"pkg:nuget/packweir.private.fixture@1.0.0","version":"1.0.0"},"repository":"nuget-prod"}]}'
+if test "$identities" = "$expected" && test "$request_filename" = "$filename"; then outcome=pass; fi
 printf '{"outcome":"%s","details":{"fixture_only":true,"binding_subject":"%s","binding_configuration":"%s","binding_evidence_digest":"%s","production_scope_matched":%s},"references":[]}\n' "$outcome" "$subject" "$configuration" "$bundle_digest" "$(test "$outcome" = pass && printf true || printf false)"

@@ -1,6 +1,6 @@
 # Hosted Maven releases
 
-Packweir 0.4.0 adds staged, immutable Maven-format releases. Gradle's native `maven-publish` plugin uploads into a stage; Maven and Gradle consume the published files through the normal authenticated package endpoint. Publishing for npm, PyPI, Cargo, NuGet, OCI, and Maven snapshot versions remains unfinished. The existing proxy adapters continue to support their documented inputs.
+Packweir supports staged, immutable Maven-format releases. Gradle's native `maven-publish` plugin uploads into a stage; Maven and Gradle consume the published files through the normal authenticated package endpoint. Version 0.6.0 also supports [hosted NuGet packages](nuget.md) using the same lifecycle and cross-repository governance. Publishing for npm, PyPI, Cargo, OCI, and Maven snapshot versions remains unfinished. The existing proxy adapters continue to support their documented inputs.
 
 ## Configuration and credentials
 
@@ -47,13 +47,13 @@ The optional principal `expires_at` is an RFC 3339 timestamp. Expired principals
 
 Read, write, and promote permissions are independent. Publishing credentials can inspect their authorized stages, but staged download URLs never serve quarantined file contents. Service credentials cannot use administrative evidence/document/rescan APIs. Administrative tokens do not implicitly publish. Native clients can use HTTP Basic with the service token as password; bearer tokens are also accepted.
 
-`legacy_read_enabled` defaults to `true` for compatibility: the existing read token can read **all repositories**, including hosted ones. Set it to `false` and add explicit consumer grants when access needs to differ by repository or Maven group. Disabling it also means adding grants for any proxy repositories those clients use. Namespace grants currently support Maven groups only; unscoped read grants support each existing proxy ecosystem. This is an operator-configured service-credential model; SSO, user management, delegated credential issuance, and general RBAC remain planned work.
+`legacy_read_enabled` defaults to `true` for compatibility: the existing read token can read **all repositories**, including hosted ones. Set it to `false` and add explicit consumer grants when access needs to differ by repository or package scope. Disabling it also means adding grants for any proxy repositories those clients use. Namespace grants support Maven groups and canonical NuGet package-ID prefixes; unscoped read grants support each existing proxy ecosystem. This is an operator-configured service-credential model; SSO, user management, delegated credential issuance, and general RBAC remain planned work.
 
 ## Ownership and routing
 
 `com.acme` ownership covers that group and descendants such as `com.acme.tools`, with dot boundaries. It excludes `com.acmeevil`. Other Maven repositories reject requests under the reserved group before cache access, metadata fetching, or upstream contact. Wrapped download paths, directory aliases, redirects, and administrative prefetch use the same reservation. Unknown CDN targets cannot establish that they are outside a reserved group and are rejected where ownership applies.
 
-A missing, quarantined, denied, or revoked hosted coordinate never falls through to a proxy. Ownership reserves a configured source; it does not authenticate a publisher or establish benign content. Package-manager bypasses outside Packweir still need deployment/client network policy. Repository groups, precedence for other ecosystems, and namespace ownership outside Maven remain unfinished.
+A missing, quarantined, denied, or revoked hosted coordinate never falls through to a proxy. Ownership reserves a configured source; it does not authenticate a publisher or establish benign content. Package-manager bypasses outside Packweir still need deployment/client network policy. Repository groups and source ownership outside Maven/NuGet remain unfinished.
 
 ## Publish and review
 

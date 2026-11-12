@@ -2,7 +2,10 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use base64::Engine;
 use chrono::{Duration, Utc};
 use packweir::{
-    access::{AccessConfig, AccessControl, Action, Grant, MavenOwnership, ServicePrincipal},
+    access::{
+        AccessConfig, AccessControl, Action, Grant, MavenOwnership, NugetOwnership,
+        ServicePrincipal,
+    },
     config::{Config, RepositoryKind},
     identity,
     model::Ecosystem,
@@ -826,4 +829,351 @@ fn explicit_proxy_primary_does_not_enable_queries_or_unknown_download_sources() 
         .additional_repositories
         .clear();
     assert_ne!(original, config.fingerprint());
+}
+
+fn nuget_configuration() -> Config {
+    let mut config = configuration();
+    let mut hosted = config.repositories["releases"].clone();
+    hosted.ecosystem = Ecosystem::Nuget;
+    config
+        .repositories
+        .insert("nuget-local".into(), hosted.clone());
+    config.repositories.insert("nuget-prod".into(), hosted);
+    config.access.nuget_owners.push(NugetOwnership {
+        prefix: "packweir.private".into(),
+        repository: "nuget-local".into(),
+        additional_repositories: vec!["nuget-prod".into()],
+    });
+    config
+}
+
+#[test]
+fn nuget_id_reservations_are_explicit_and_do_not_use_maven_namespaces() {
+    let mut config = nuget_configuration();
+    config.validate().unwrap();
+    let package = packweir::nuget::Coordinate::new("Packweir.Private.Fixture", "01.0.0.0+build")
+        .unwrap()
+        .package();
+    assert!(package.namespace.is_none());
+    for repository in ["nuget-local", "nuget-prod"] {
+        assert!(config.access.package_owner_allowed(repository, &package));
+        assert!(
+            config
+                .access
+                .owner_allowed_for(repository, Ecosystem::Nuget, "packweir.private")
+        );
+    }
+    assert!(!config.access.package_owner_allowed("nuget", &package));
+    assert!(
+        config
+            .access
+            .owner_allowed_for("nuget", Ecosystem::Nuget, "packweir.privateevil")
+    );
+    assert!(
+        !config
+            .access
+            .owner_allowed_for("nuget-local", Ecosystem::Nuget, "Packweir.Private")
+    );
+    assert!(config.access.owner_allowed("maven", "packweir.private"));
+    for prefix in ["packweir", "packweir.private", "packweir.private.tools"] {
+        let mut invalid = config.clone();
+        invalid.access.nuget_owners.push(NugetOwnership {
+            prefix: prefix.into(),
+            repository: "nuget".into(),
+            additional_repositories: vec![],
+        });
+        assert!(invalid.validate().is_err());
+    }
+    config.access.nuget_owners.push(NugetOwnership {
+        prefix: "packweir.private.tools".into(),
+        repository: "nuget-prod".into(),
+        additional_repositories: vec!["nuget-local".into()],
+    });
+    config.validate().unwrap();
+    for (prefix, repository, additional) in [
+        ("Packweir.Private", "nuget-local", vec![]),
+        ("packweir..private", "nuget-local", vec![]),
+        ("other", "maven", vec![]),
+        ("other", "nuget-local", vec!["nuget"]),
+        ("other", "nuget-local", vec!["nuget-prod", "nuget-prod"]),
+    ] {
+        let mut invalid = config.clone();
+        invalid.access.nuget_owners.push(NugetOwnership {
+            prefix: prefix.into(),
+            repository: repository.into(),
+            additional_repositories: additional.into_iter().map(str::to_owned).collect(),
+        });
+        assert!(invalid.validate().is_err());
+    }
+    let legacy: AccessConfig = toml::from_str("legacy_read_enabled=true").unwrap();
+    assert!(legacy.nuget_owners.is_empty());
+    assert!(
+        toml::from_str::<AccessConfig>(
+            "[[nuget_owners]]\nprefix='example'\nrepository='nuget'\nunknown=true"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn nuget_ownership_preflights_flat_registration_wrapped_and_unknown_resources() {
+    let config = nuget_configuration();
+    let repo = &config.repositories["nuget"];
+    for path in [
+        "flatcontainer/packweir.private/index.json",
+        "v3-flatcontainer/Packweir.Private.Fixture/1.0.0/Packweir.Private.Fixture.1.0.0.nupkg",
+        "flat/packweir.private.fixture/1.0.0/packweir.private.fixture.nuspec",
+        "flat/packweir.private.fixture/1.0.0/packweir.private.fixture.1.0.0.nupkg.sha512",
+        "registration5-gz-semver2/packweir.private.fixture/index.json",
+        "registration5-gz-semver2/packweir.private.fixture/page/1.0.0/2.0.0.json",
+    ] {
+        assert!(!config.access.path_allowed("nuget", repo, path), "{path}");
+        assert!(
+            config
+                .access
+                .path_allowed("nuget-local", &config.repositories["nuget-local"], path),
+            "{path}"
+        );
+    }
+    assert!(config.access.path_allowed("nuget", repo, "index.json"));
+    assert!(
+        config
+            .access
+            .path_allowed("nuget", repo, "flat/packweir.privateevil/index.json")
+    );
+    for path in [
+        "query",
+        "query?q=packweir",
+        "unknown/index.json",
+        "unknown/flat/public/index.json",
+        "flat/packweir.private/unknown",
+        "flat/%70ackweir.private/index.json",
+        "flat/packweir.private/../public/index.json",
+    ] {
+        assert!(!config.access.path_allowed("nuget", repo, path), "{path}");
+        assert!(
+            !config
+                .access
+                .path_allowed("nuget-local", &config.repositories["nuget-local"], path),
+            "{path}"
+        );
+    }
+    for raw in [
+        "https://api.nuget.org/v3-flatcontainer/packweir.private.fixture/index.json",
+        "https://api.nuget.org/v3-flatcontainer/Packweir.Private.Fixture/1.0.0/Packweir.Private.Fixture.1.0.0.nupkg",
+        "https://api.nuget.org/unknown/package.bin",
+        "https://api.nuget.org/unknown/flat/public/index.json",
+        "https://api.nuget.org/index.json",
+        "https://api.nuget.org/v3-flatcontainer/public/index.json?alternate=packweir.private",
+        "https://unconfigured.example/v3-flatcontainer/public/index.json",
+    ] {
+        let target: url::Url = raw.parse().unwrap();
+        assert!(!config.access.url_allowed("nuget", repo, &target), "{raw}");
+        let wrapped =
+            url::Url::parse(&registry::wrap(&config.public_url, "nuget", &target)).unwrap();
+        assert!(
+            !config.access.path_allowed(
+                "nuget",
+                repo,
+                wrapped.path().strip_prefix("/r/nuget/").unwrap()
+            ),
+            "{raw}"
+        );
+    }
+    assert!(config.access.url_allowed(
+        "nuget",
+        repo,
+        &"https://api.nuget.org/v3/index.json".parse().unwrap()
+    ));
+    assert!(
+        config.access.url_allowed(
+            "nuget",
+            repo,
+            &"https://api.nuget.org/v3-flatcontainer/public/index.json"
+                .parse()
+                .unwrap()
+        )
+    );
+}
+
+#[test]
+fn nuget_scoped_permissions_and_native_push_keys_preserve_role_boundaries() {
+    let mut config = nuget_configuration();
+    config.access.principals.insert(
+        "builder".into(),
+        principal(vec![
+            grant("nuget", vec![Action::Read], Some("packweir.private")),
+            grant(
+                "nuget-local",
+                vec![Action::Read, Action::Write],
+                Some("packweir.private"),
+            ),
+            grant("nuget-prod", vec![Action::Write], Some("packweir.private")),
+        ]),
+    );
+    config.validate().unwrap();
+    let access = control(&config, &"s".repeat(32));
+    let identity = access.authenticate(&headers(&"s".repeat(32))).unwrap();
+    let package = packweir::nuget::Coordinate::new("Packweir.Private.Fixture", "1")
+        .unwrap()
+        .package();
+    assert!(identity.allows_package("nuget-local", Action::Write, &package));
+    assert!(!identity.allows_package("nuget-prod", Action::Promote, &package));
+    assert!(identity.allows_package_copy("nuget-local", "nuget-prod", &package));
+    assert!(!identity.allows_package_copy("nuget-prod", "nuget-local", &package));
+    assert!(!identity.allows_copy("nuget-local", "nuget-prod", "packweir.private"));
+    for path in [
+        "index.json",
+        "flat/packweir.private/index.json",
+        "registration5-gz-semver2/Packweir.Private.Fixture/index.json",
+    ] {
+        assert!(
+            identity.allows_path("nuget", &config.repositories["nuget"], Action::Read, path),
+            "{path}"
+        );
+    }
+    for path in [
+        "query",
+        "unknown/index.json",
+        "flat/packweir.privateevil/index.json",
+        "flat/packweir.other/index.json",
+    ] {
+        assert!(
+            !identity.allows_path("nuget", &config.repositories["nuget"], Action::Read, path),
+            "{path}"
+        );
+    }
+    let mut native = HeaderMap::new();
+    native.insert("X-NuGet-ApiKey", "s".repeat(32).parse().unwrap());
+    assert_eq!(
+        access.authenticate_nuget_push(&native).unwrap().id,
+        "builder"
+    );
+    assert!(access.authenticate(&native).is_none());
+    native.insert(header::AUTHORIZATION, "s".repeat(32).parse().unwrap());
+    assert!(access.authenticate_nuget_push(&native).is_none());
+    assert!(access.authenticate(&native).is_none());
+    native.remove(header::AUTHORIZATION);
+    native.append("x-nuget-apikey", "s".repeat(32).parse().unwrap());
+    assert!(access.authenticate_nuget_push(&native).is_none());
+    let mut invalid = config.clone();
+    invalid.access.principals.get_mut("builder").unwrap().grants[0].namespace =
+        Some("Packweir.Private".into());
+    assert!(invalid.validate().is_err());
+}
+
+#[tokio::test]
+async fn nuget_redirects_cannot_fetch_reserved_ids_or_leave_a_scoped_grant() {
+    use axum::{Router, extract::OriginalUri, http::StatusCode, response::IntoResponse};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = hits.clone();
+    let app = Router::new().fallback(move |OriginalUri(uri): OriginalUri| {
+        let observed = observed.clone();
+        async move {
+            match uri.path() {
+                "/repo/flat/public/index.json" => (
+                    StatusCode::FOUND,
+                    [(
+                        header::LOCATION,
+                        "/repo/flat/Packweir.Private.Fixture/index.json",
+                    )],
+                )
+                    .into_response(),
+                "/repo/flat/public.scoped/index.json" => (
+                    StatusCode::FOUND,
+                    [(header::LOCATION, "/repo/flat/other/index.json")],
+                )
+                    .into_response(),
+                "/repo/flat/public.query/index.json" => (
+                    StatusCode::FOUND,
+                    [(
+                        header::LOCATION,
+                        "/repo/flat/public/index.json?q=packweir.private",
+                    )],
+                )
+                    .into_response(),
+                "/repo/flat/Packweir.Private.Fixture/index.json"
+                | "/repo/flat/other/index.json" => {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    "forbidden metadata".into_response()
+                }
+                _ => "unowned metadata".into_response(),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base: url::Url = format!("http://{}/repo/", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut config = nuget_configuration();
+    config.allow_private_upstreams = true;
+    let repo = config.repositories.get_mut("nuget").unwrap();
+    repo.upstream = Some(base.clone());
+    repo.download_origins.clear();
+    config.validate().unwrap();
+    let guard = network::FetchGuard {
+        access: &config.access,
+        repository: "nuget",
+        principal: None,
+    };
+    for path in ["flat/public/index.json", "flat/public.query/index.json"] {
+        assert!(
+            network::fetch_guarded(
+                &config.repositories["nuget"],
+                &base.join(path).unwrap(),
+                None,
+                1024,
+                true,
+                &guard
+            )
+            .await
+            .is_err()
+        );
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    let unowned = network::fetch_guarded(
+        &config.repositories["nuget"],
+        &base.join("flat/public.unredirected/index.json").unwrap(),
+        None,
+        1024,
+        true,
+        &guard,
+    )
+    .await
+    .unwrap();
+    assert_eq!(unowned.bytes.as_ref(), b"unowned metadata");
+    config.access.nuget_owners.clear();
+    config.access.principals.insert(
+        "builder".into(),
+        principal(vec![grant("nuget", vec![Action::Read], Some("public"))]),
+    );
+    let identity = control(&config, &"s".repeat(32))
+        .authenticate(&headers(&"s".repeat(32)))
+        .unwrap();
+    let guard = network::FetchGuard {
+        access: &config.access,
+        repository: "nuget",
+        principal: Some(&identity),
+    };
+    assert!(
+        network::fetch_guarded(
+            &config.repositories["nuget"],
+            &base.join("flat/public.scoped/index.json").unwrap(),
+            None,
+            1024,
+            true,
+            &guard
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    server.abort();
 }

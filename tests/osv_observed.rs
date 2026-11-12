@@ -217,7 +217,10 @@ fn versioned_bundle(key: &str, version: &str) -> (Value, &'static str, String) {
 async fn scan_version(key: &str, version: &str) -> Outcome {
     let root = tempfile::tempdir().unwrap();
     let (bundle, ecosystem, name) = versioned_bundle(key, version);
-    let clean = json!({"results":[{"packages":[{"package":{"ecosystem":ecosystem,"name":name,"version":version},"vulnerabilities":[]}]}]});
+    let observed_version = bundle["identities"][0]["package"]["version"]
+        .as_str()
+        .unwrap();
+    let clean = json!({"results":[{"packages":[{"package":{"ecosystem":ecosystem,"name":name,"version":observed_version},"vulnerabilities":[]}]}]});
     let mut command = scanner(root.path(), &clean, 0);
     if let ScannerDriver::OsvObserved { databases } = &mut command.driver {
         let database = databases.remove("npm").unwrap();
@@ -229,9 +232,24 @@ async fn scan_version(key: &str, version: &str) -> Outcome {
         .outcome
 }
 
+#[test]
+fn unsupported_nuget_coordinates_are_rejected_before_osv_scanning() {
+    let config = Config::load(Path::new("packweir.toml")).unwrap();
+    for version in ["1.x", "latest1", "1.0.0_latest"] {
+        let origin =
+            format!("https://api.nuget.org/flat/ansi.html/{version}/ansi.html.{version}.nupkg");
+        assert!(
+            identity::observe(&config.repositories["nuget"], &origin.parse().unwrap(), "")
+                .is_none(),
+            "unsupported NuGet observation: {version}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn clean_matching_output_cannot_approve_ranges_tags_or_unsupported_versions() {
-    // The fixture always reports clean, exact input coverage with exit zero.
+    // These spellings reach the scanner. The fixture always reports clean,
+    // exact observed-coordinate coverage with exit zero.
     // Those outputs must not turn unsupported version syntax into approval.
     for (ecosystem, version) in [
         ("npm", "1.x"),
@@ -244,10 +262,8 @@ async fn clean_matching_output_cannot_approve_ranges_tags_or_unsupported_version
         ("pypi", "1.x"),
         ("pypi", "latest1"),
         ("pypi", "release2026"),
-        ("nuget", "1.x"),
-        ("nuget", "latest1"),
-        ("nuget", "1.0.0_latest"),
-        ("nuget", "1.0.0.0"),
+        ("nuget", "1.0.0.1"),
+        ("nuget", "1.0.0.1-rc.1"),
         ("maven", "1.x"),
         ("maven", "latest1"),
         ("maven", "release2026"),
@@ -273,7 +289,10 @@ async fn concrete_prereleases_and_supported_literal_spellings_keep_exact_coverag
         ("pypi", "1.0+local1"),
         ("nuget", "1"),
         ("nuget", "1.0"),
+        ("nuget", "1.0.0.0"),
+        ("nuget", "0001.0000.0000.0000+build7"),
         ("nuget", "1.0.0-rc.1+build7"),
+        ("nuget", "1.0.0-RC.1+Build7"),
         ("maven", "1.0.0.Final"),
         ("maven", "2.0.0-rc1"),
         ("maven", "2.0.0-SNAPSHOT"),

@@ -686,14 +686,14 @@ impl Config {
             );
             if repo.kind == RepositoryKind::Hosted {
                 ensure!(
-                    repo.ecosystem == Ecosystem::Maven
+                    matches!(repo.ecosystem, Ecosystem::Maven | Ecosystem::Nuget)
                         && repo.retain
                         && repo.upstream.is_none()
                         && repo.download_origins.is_empty()
                         && repo.token_env.is_none()
                         && repo.cargo_download_template.is_none()
                         && repo.cache_max_age_seconds.is_none(),
-                    "hosted repositories require Maven, retained bytes, and no proxy settings"
+                    "hosted repositories require Maven or NuGet, retained bytes, and no proxy settings"
                 );
                 continue;
             }

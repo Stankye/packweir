@@ -1,4 +1,4 @@
-//! Immutable hosted Maven release reservations and evidence-bound publication.
+//! Immutable hosted release reservations and evidence-bound publication.
 //!
 //! Callers authenticate/authorize roles, validate POM/packaging and store verified bytes before
 //! adding a file. No package code is executed here. Publication is an intent, never a permanent
@@ -215,17 +215,15 @@ pub async fn create_stage(
     actor: &str,
 ) -> Result<Stage> {
     actor_valid(actor)?;
-    let coordinate = crate::maven::Coordinate::new(&package.name, &package.version)?;
+    canonical_package(&package)?;
     if repository.is_empty()
         || repository.len() > 128
         || !repository
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        || package.ecosystem != Ecosystem::Maven
-        || coordinate.package() != package
     {
         return Err(HostedError::Invalid(
-            "hosted release requires canonical immutable Maven coordinates".into(),
+            "hosted release requires a valid repository name".into(),
         ));
     }
     let mut tx = store.pool.begin().await?;
@@ -282,17 +280,58 @@ async fn files_in(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<Vec<Ho
         .await?,
     )
 }
-fn file_valid(stage: &Stage, artifact: &Artifact, path: &str) -> Result<()> {
-    let coordinate = crate::maven::Coordinate::new(&stage.package.name, &stage.package.version)?;
-    let crate::maven::UploadKind::Artifact { filename, .. } =
-        crate::maven::classify_upload(&coordinate, path)?
-    else {
-        return Err(HostedError::Invalid(
-            "only artifact members belong in a sealed manifest".into(),
-        ));
+fn canonical_package(package: &PackageIdentity) -> Result<()> {
+    let expected = match package.ecosystem {
+        Ecosystem::Maven => {
+            crate::maven::Coordinate::new(&package.name, &package.version)?.package()
+        }
+        Ecosystem::Nuget => {
+            crate::nuget::Coordinate::new(&package.name, &package.version)?.package()
+        }
+        _ => {
+            return Err(HostedError::Invalid(
+                "hosted release requires Maven or NuGet coordinates".into(),
+            ));
+        }
     };
-    if stage.package != coordinate.package()
-        || artifact.repository != stage.repository
+    if expected != *package {
+        return Err(HostedError::Invalid(
+            "hosted release requires canonical immutable coordinates".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn expected_filename(package: &PackageIdentity, path: &str) -> Result<String> {
+    canonical_package(package)?;
+    match package.ecosystem {
+        Ecosystem::Maven => {
+            let coordinate = crate::maven::Coordinate::new(&package.name, &package.version)?;
+            let crate::maven::UploadKind::Artifact { filename, .. } =
+                crate::maven::classify_upload(&coordinate, path)?
+            else {
+                return Err(HostedError::Invalid(
+                    "only artifact members belong in a sealed manifest".into(),
+                ));
+            };
+            Ok(filename)
+        }
+        Ecosystem::Nuget => {
+            let coordinate = crate::nuget::Coordinate::new(&package.name, &package.version)?;
+            if path != format!("flatcontainer/{}", coordinate.package_path()) {
+                return Err(HostedError::Invalid(
+                    "NuGet stage accepts only its canonical package archive".into(),
+                ));
+            }
+            Ok(coordinate.filename())
+        }
+        _ => unreachable!("canonical package checked above"),
+    }
+}
+
+fn file_valid(stage: &Stage, artifact: &Artifact, path: &str) -> Result<()> {
+    let filename = expected_filename(&stage.package, path)?;
+    if artifact.repository != stage.repository
         || artifact.package.as_ref() != Some(&stage.package)
         || artifact.filename != filename
         || artifact.size < 0
@@ -305,7 +344,7 @@ fn file_valid(stage: &Stage, artifact: &Artifact, path: &str) -> Result<()> {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
     {
         return Err(HostedError::Invalid(
-            "file does not match reserved Maven coordinates".into(),
+            "file does not match reserved hosted coordinates".into(),
         ));
     }
     Ok(())
@@ -382,11 +421,12 @@ fn checked_config(config: &Config, stage: &Stage, files: &[HostedFile]) -> Resul
         .get(&stage.repository)
         .ok_or_else(|| HostedError::Invalid("unknown hosted repository".into()))?;
     if repo.kind != crate::config::RepositoryKind::Hosted
-        || repo.ecosystem != Ecosystem::Maven
+        || repo.ecosystem != stage.package.ecosystem
+        || !matches!(repo.ecosystem, Ecosystem::Maven | Ecosystem::Nuget)
         || !repo.retain
     {
         return Err(HostedError::Invalid(
-            "hosted Maven bytes must be retained".into(),
+            "hosted bytes require a matching retained Maven or NuGet repository".into(),
         ));
     }
     for file in files {
@@ -464,14 +504,24 @@ async fn seal_in<'a>(
     if files.is_empty() {
         return Err(HostedError::Invalid("cannot seal an empty stage".into()));
     }
-    let name = stage.package.name.split_once(':').unwrap().1;
-    if !files
-        .iter()
-        .any(|file| file.artifact.filename == format!("{name}-{}.pom", stage.package.version))
-    {
-        return Err(HostedError::Invalid(
-            "release requires its exact primary POM".into(),
-        ));
+    match stage.package.ecosystem {
+        Ecosystem::Maven => {
+            let name = stage.package.name.split_once(':').unwrap().1;
+            if !files.iter().any(|file| {
+                file.artifact.filename == format!("{name}-{}.pom", stage.package.version)
+            }) {
+                return Err(HostedError::Invalid(
+                    "release requires its exact primary POM".into(),
+                ));
+            }
+        }
+        Ecosystem::Nuget if files.len() != 1 => {
+            return Err(HostedError::Invalid(
+                "NuGet release requires exactly one package archive".into(),
+            ));
+        }
+        Ecosystem::Nuget => {}
+        _ => unreachable!("checked hosted ecosystem"),
     }
     // Serialize final URL bindings with proxy register/claims before inserting, never upsert.
     for file in &files {
@@ -668,18 +718,15 @@ pub async fn copy_release(
     if source.manifest_digest.as_deref() != Some(request.source_manifest_digest.as_str()) {
         return Err(HostedError::Conflict("source manifest changed".into()));
     }
-    let group = source
-        .package
-        .namespace
-        .as_deref()
-        .ok_or_else(|| HostedError::Invalid("Maven group required".into()))?;
-    if !config.access.owner_allowed(&source.repository, group)
+    if !config
+        .access
+        .package_owner_allowed(&source.repository, &source.package)
         || !config
             .access
-            .owner_allowed(&request.destination_repository, group)
+            .package_owner_allowed(&request.destination_repository, &source.package)
     {
         return Err(HostedError::Invalid(
-            "source or destination is outside namespace ownership".into(),
+            "source or destination is outside package ownership".into(),
         ));
     }
     let Some(repository) = config.repositories.get(&request.destination_repository) else {
@@ -688,11 +735,12 @@ pub async fn copy_release(
         ));
     };
     if repository.kind != crate::config::RepositoryKind::Hosted
-        || repository.ecosystem != Ecosystem::Maven
+        || repository.ecosystem != source.package.ecosystem
+        || !matches!(repository.ecosystem, Ecosystem::Maven | Ecosystem::Nuget)
         || !repository.retain
     {
         return Err(HostedError::Invalid(
-            "destination must be retained hosted Maven storage".into(),
+            "destination must be retained hosted storage for the same ecosystem".into(),
         ));
     }
     // Reserve before taking shared content locks. Colliding reservations roll back all work.

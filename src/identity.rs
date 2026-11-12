@@ -300,7 +300,7 @@ pub fn canonical_name(ecosystem: Ecosystem, value: &str) -> Option<String> {
         Ecosystem::Cargo => {
             (simple(value) && !value.contains('.')).then(|| value.to_ascii_lowercase())
         }
-        Ecosystem::Nuget => simple(value).then(|| value.to_ascii_lowercase()),
+        Ecosystem::Nuget => crate::nuget::canonical_name(value).ok(),
     }
 }
 
@@ -326,6 +326,13 @@ pub fn from_coordinates(
 
 fn package(ecosystem: Ecosystem, name: &str, version: &str) -> Option<PackageIdentity> {
     let name = canonical_name(ecosystem, name)?;
+    let normalized;
+    let version = if ecosystem == Ecosystem::Nuget {
+        normalized = crate::nuget::normalize_version(version).ok()?;
+        normalized.as_str()
+    } else {
+        version
+    };
     if version.is_empty()
         || version.len() > 256
         || !version

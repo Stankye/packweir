@@ -67,9 +67,7 @@ async fn fetch_inner(
         ensure!(allowed(repo, &current), "upstream origin is not allowed");
         if let Some(guard) = guard {
             ensure!(
-                guard
-                    .access
-                    .maven_url_allowed(guard.repository, repo, &current),
+                guard.access.url_allowed(guard.repository, repo, &current),
                 "Maven source ownership denied"
             );
             ensure!(

@@ -30,16 +30,25 @@ def configuration(storage):
         '[repositories.maven-local]\nkind="hosted"\necosystem="maven"\nretain=true',
         '[repositories.maven-prod]\nkind="hosted"\necosystem="maven"\nretain=true\n'
         '[repositories.maven-prod.policy]\nrevision="production-fixture-review-v1"\nrequired=["fixture_review"]',
+        '[repositories.nuget-local]\nkind="hosted"\necosystem="nuget"\nretain=true',
+        '[repositories.nuget-prod]\nkind="hosted"\necosystem="nuget"\nretain=true\n'
+        '[repositories.nuget-prod.policy]\nrevision="production-nuget-fixture-review-v1"\nrequired=["fixture_review"]',
         '[access.principals.publisher]\ntoken_env="PACKWEIR_PUBLISH_TOKEN"\n'
-        '[[access.principals.publisher.grants]]\nrepository="maven-local"\nactions=["write"]\nnamespace="dev.packweir.private"',
+        '[[access.principals.publisher.grants]]\nrepository="maven-local"\nactions=["write"]\nnamespace="dev.packweir.private"\n'
+        '[[access.principals.publisher.grants]]\nrepository="nuget-local"\nactions=["write"]\nnamespace="packweir.private"',
         '[access.principals.promoter]\ntoken_env="PACKWEIR_PROMOTE_TOKEN"\n'
-        '[[access.principals.promoter.grants]]\nrepository="maven-local"\nactions=["promote"]\nnamespace="dev.packweir.private"',
+        '[[access.principals.promoter.grants]]\nrepository="maven-local"\nactions=["promote"]\nnamespace="dev.packweir.private"\n'
+        '[[access.principals.promoter.grants]]\nrepository="nuget-local"\nactions=["promote"]\nnamespace="packweir.private"',
         '[access.principals.copier]\ntoken_env="PACKWEIR_COPY_TOKEN"\n'
         '[[access.principals.copier.grants]]\nrepository="maven-local"\nactions=["read"]\nnamespace="dev.packweir.private"\n'
-        '[[access.principals.copier.grants]]\nrepository="maven-prod"\nactions=["write"]\nnamespace="dev.packweir.private"',
+        '[[access.principals.copier.grants]]\nrepository="maven-prod"\nactions=["write"]\nnamespace="dev.packweir.private"\n'
+        '[[access.principals.copier.grants]]\nrepository="nuget-local"\nactions=["read"]\nnamespace="packweir.private"\n'
+        '[[access.principals.copier.grants]]\nrepository="nuget-prod"\nactions=["write"]\nnamespace="packweir.private"',
         '[access.principals.prod-promoter]\ntoken_env="PACKWEIR_PROD_PROMOTE_TOKEN"\n'
-        '[[access.principals.prod-promoter.grants]]\nrepository="maven-prod"\nactions=["promote"]\nnamespace="dev.packweir.private"',
+        '[[access.principals.prod-promoter.grants]]\nrepository="maven-prod"\nactions=["promote"]\nnamespace="dev.packweir.private"\n'
+        '[[access.principals.prod-promoter.grants]]\nrepository="nuget-prod"\nactions=["promote"]\nnamespace="packweir.private"',
         '[[access.maven_owners]]\nnamespace="dev.packweir.private"\nrepository="maven-local"\nadditional_repositories=["maven-prod"]',
+        '[[access.nuget_owners]]\nprefix="packweir.private"\nrepository="nuget-local"\nadditional_repositories=["nuget-prod"]',
         '[scanners.fixture_review]\nprogram="/bin/sh"\nargs=["resource-review_script"]\nversion="qualification-fixture-only-v1"\ntimeout_seconds=10\n'
         '[scanners.fixture_review.resources.review_script]\npath="/tests/review_fixture.sh"\nsha256="' + hashlib.sha256((ROOT/"tests/e2e/review_fixture.sh").read_bytes()).hexdigest() + '"',
     ]
@@ -55,6 +64,8 @@ def configuration(storage):
         if name == "maven":
             section += '\ncache_max_age_seconds=0'
         sections.append(section)
+    sections.append('[repositories.nuget-other]\necosystem="nuget"\nupstream="http://upstream:8081/nuget/"\n'
+                    'download_origins=["http://upstream:8081/"]')
     return "\n\n".join(sections) + "\n"
 
 
@@ -108,6 +119,25 @@ def main():
                 raise RuntimeError(f"Compose command failed: {' '.join(args)}; see {log_path}")
             return result.stdout
 
+        def nuget_probe(phase, stage_id, target_id=None):
+            args = ["run", "--rm", "--no-deps", "probe", "python", "/tests/nuget_probe.py", phase, stage_id]
+            if target_id:
+                args.append(target_id)
+            return compose(*args, log_name="nuget-" + phase + ".log")
+
+        def nuget_status(stage_id, token, proof, actor, log_name):
+            result = json.loads(compose("exec", "-T", "--env", "PACKWEIR_SERVICE_TOKEN=" + token, "gateway", "packweir",
+                                       "--config", "/app/e2e.toml", "hosted", "status", stage_id, log_name=log_name))
+            promotion = result["promotion"]
+            if (result["stage"]["id"] != stage_id or result["stage"]["state"] != "published" or
+                    promotion["manifest_digest"] != proof["manifest_digest"] or promotion["actor"] != actor or
+                    {item["path"]: item["subject"] for item in promotion["files"]} !=
+                    {item["path"]: item["sha256"] for item in proof["files"]} or
+                    any(not item["evidence"] or len(item["configuration"]) != 64 for item in promotion["files"])):
+                raise RuntimeError("Hosted NuGet CLI status did not preserve the independently approved manifest")
+            proof["cli_status"] = "passed"
+            return result
+
         try:
             print(f"Starting {storage} qualification ({project})", flush=True)
             if not options.skip_build:
@@ -121,6 +151,13 @@ def main():
             if not publication_version:
                 raise RuntimeError("Hosted publisher did not report its native Gradle version")
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","hosted-seal",stage_id,log_name="hosted-seal.log")
+            nuget_id = str(uuid.uuid4())
+            nuget_probe("create", nuget_id)
+            nuget_publication_log = compose("run", "--rm", "--no-deps", "--env", f"PACKWEIR_STAGE_ID={nuget_id}", "nuget-publish", log_name="nuget-publish.log")
+            nuget_publication_version = re.search(r"PACKWEIR_CLIENT_VERSION_BEGIN\s*(.*?)\s*PACKWEIR_CLIENT_VERSION_END", nuget_publication_log, re.S)
+            if not nuget_publication_version:
+                raise RuntimeError("Hosted NuGet publisher did not report its native dotnet SDK version")
+            nuget_probe("seal", nuget_id)
             # Some Compose versions reject --wait on a health-disabled service.
             # The prefetch probe below verifies actual worker progress with a deadline.
             compose("up","-d","--no-deps","worker")
@@ -139,6 +176,10 @@ def main():
                 raise RuntimeError("Hosted CLI status did not preserve the promotion evidence receipt")
             hosted_proof["cli_status"] = "passed"
             source_proof = hosted_proof
+            nuget_source_log = nuget_probe("promote", nuget_id)
+            nuget_source_proof = json.loads(re.search(r"PACKWEIR_NUGET_SOURCE_PROOF=(.+)", nuget_source_log).group(1))
+            nuget_source_proof["publisher"] = {"client": "dotnet-nuget-push", "version_output": nuget_publication_version.group(1), "log": "nuget-publish.log"}
+            nuget_status(nuget_id, "fixture-promote-token-000000000000000", nuget_source_proof, "promoter", "nuget-source-status.log")
             # Stop analysis so a copied sealed target must demonstrate missing target evidence.
             compose("stop","worker")
             target_id = str(uuid.uuid4())
@@ -148,6 +189,15 @@ def main():
             if copy_receipt["source_stage"] != stage_id or copy_receipt["source_manifest_digest"] != source_proof["manifest_digest"] or copy_receipt["destination"]["stage"]["id"] != target_id or copy_receipt["destination"]["stage"]["state"] != "sealed":
                 raise RuntimeError("Hosted copy CLI did not bind the source and sealed production manifest")
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-pending",stage_id,target_id,log_name="copy-pending.log")
+            nuget_target_id = str(uuid.uuid4())
+            nuget_probe("copy-denied", nuget_id, nuget_target_id)
+            nuget_copy_receipt = json.loads(compose("exec", "-T", "--env", "PACKWEIR_SERVICE_TOKEN=fixture-copy-token-000000000000000000",
+                "gateway", "packweir", "--config", "/app/e2e.toml", "hosted", "copy", nuget_id, "nuget-prod", "--source-manifest",
+                nuget_source_proof["manifest_digest"], "--id", nuget_target_id, log_name="nuget-copy.log"))
+            if (nuget_copy_receipt["source_stage"] != nuget_id or nuget_copy_receipt["source_manifest_digest"] != nuget_source_proof["manifest_digest"] or
+                    nuget_copy_receipt["destination"]["stage"]["id"] != nuget_target_id or nuget_copy_receipt["destination"]["stage"]["state"] != "sealed"):
+                raise RuntimeError("Hosted NuGet CLI copy did not bind the source and sealed production manifests")
+            nuget_probe("copy-pending", nuget_id, nuget_target_id)
             compose("up","-d","--no-deps","worker")
             target_log = compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-promote",stage_id,target_id,log_name="production-promote.log")
             hosted_proof = json.loads(re.search(r"PACKWEIR_CROSS_PROOF=(.+)", target_log).group(1))
@@ -164,8 +214,19 @@ def main():
                 raise RuntimeError("Production CLI copy lineage differs or exposes private source reports")
             hosted_proof["cli_copy"] = "passed"
             hosted_proof["cli_status"] = "passed"
+            nuget_target_log = nuget_probe("copy-promote", nuget_id, nuget_target_id)
+            nuget_proof = json.loads(re.search(r"PACKWEIR_NUGET_PROOF=(.+)", nuget_target_log).group(1))
+            nuget_proof["source"] = nuget_source_proof
+            nuget_proof["publisher"] = nuget_source_proof["publisher"]
+            nuget_target_status = nuget_status(nuget_target_id, "fixture-prod-promote-token-0000000000", nuget_proof, "prod-promoter", "nuget-production-status.log")
+            nuget_expected_lineage = dict(nuget_copy_receipt, destination=dict(nuget_copy_receipt["destination"], stage=nuget_target_status["stage"]))
+            if nuget_target_status["copy"] != nuget_expected_lineage:
+                raise RuntimeError("Hosted NuGet CLI status copy lineage differs from its receipt")
+            nuget_proof["cli_copy"] = "passed"
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-revoke-source",stage_id,target_id,log_name="source-revoke.log")
             hosted_proof["source_revocation_independence"] = "passed"
+            nuget_probe("revoke-source", nuget_id, nuget_target_id)
+            nuget_proof["source_revocation_independence"] = "passed"
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","explain",explain_digest,"--repository","npm",log_name="explain.log")
             compose("exec","-T","gateway","packweir","--config","/app/e2e.toml","status",log_name="operations.log")
             clients = {}
@@ -176,10 +237,21 @@ def main():
                     raise RuntimeError(f"Client {name} did not report its version")
                 clients[name] = {"status":"passed", "version_output":version.group(1), "log":f"{name}.log"}
                 print(f"{storage}: {name} passed", flush=True)
+            nuget_restore_log = compose("run", "--rm", "--no-deps", "nuget-hosted", log_name="nuget-hosted-restore.log")
+            nuget_restore_version = re.search(r"PACKWEIR_CLIENT_VERSION_BEGIN\s*(.*?)\s*PACKWEIR_CLIENT_VERSION_END", nuget_restore_log, re.S)
+            if not nuget_restore_version:
+                raise RuntimeError("Hosted NuGet restore did not report its native dotnet SDK version")
+            nuget_proof["restore"] = {"client": "dotnet-restore", "status": "passed", "version_output": nuget_restore_version.group(1),
+                                      "source": "nuget-prod-only", "source_revoked": True, "fresh_cache": True, "original_nupkg_bytes": "passed",
+                                      "signature_validation": "native-client-required-pinned-ephemeral-test-author", "revocation_mode": "offline",
+                                      "packweir_signature_verification": False, "log": "nuget-hosted-restore.log"}
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","verify")
             compose("run","--rm","--no-deps","probe","python","/tests/probe.py","cross-revoke-target",stage_id,target_id,log_name="hosted-revoke.log")
             hosted_proof["revocation"] = "passed"
             (output/"hosted-report.json").write_text(json.dumps(hosted_proof,indent=2))
+            nuget_probe("revoke-target", nuget_id, nuget_target_id)
+            nuget_proof["revocation"] = "passed"
+            (output/"nuget-hosted-report.json").write_text(json.dumps(nuget_proof, indent=2))
             compose("stop","upstream")
             compose("run","--rm","--no-deps","storage-check")
             compose("stop","object-store" if storage == "s3" else "postgres")
@@ -189,7 +261,7 @@ def main():
             images = [{key: item[key] for key in ["Id","RepoTags","RepoDigests","Architecture","Os"]} for item in json.loads(inspected)]
             results.append({"storage":storage,"clients":clients,"pending_gate":"passed","denied_gate":"passed",
                             "offline_cache":"passed","retained_blob_tampering":"passed","dependency_outage":"passed",
-                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","hosted_maven":hosted_proof,"images":images,
+                            "image_defaults":"passed","explain":"passed","scoped_policies":"passed","operations":"passed","mutable_cache_revalidation":"passed","hosted_maven":hosted_proof,"hosted_nuget":nuget_proof,"images":images,
                             "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()})
             (output/"report.json").write_text(json.dumps(results[-1],indent=2))
             print(f"{storage}: policy gates, offline cache, and tamper rejection passed; report: {output / 'report.json'}", flush=True)

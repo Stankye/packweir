@@ -121,6 +121,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .merge(admin)
         .merge(crate::hosted_http::router(state.clone()))
+        .merge(crate::hosted_nuget::router(state.clone()))
         .merge(packages)
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
@@ -200,7 +201,9 @@ async fn admin_auth(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if !authorized(request.headers(), &state.admin_token) {
+    if request.headers().contains_key("x-nuget-apikey")
+        || !authorized(request.headers(), &state.admin_token)
+    {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
@@ -387,7 +390,7 @@ async fn proxy_inner(
     let Some(repo) = state.config.repositories.get(name) else {
         return Ok(failure(StatusCode::NOT_FOUND, "repository_not_found"));
     };
-    if !state.config.access.maven_path_allowed(name, repo, path) {
+    if !state.config.access.path_allowed(name, repo, path) {
         return Ok(failure(StatusCode::FORBIDDEN, "namespace_owned_elsewhere"));
     }
     if repo.kind == RepositoryKind::Hosted {
@@ -411,7 +414,7 @@ async fn proxy_inner(
     let url = target(state, name, path, uri.query(), principal).await?;
     // Apply URL-level guards before retained-byte lookup too. Older cache entries can
     // predate a namespace reservation or contain an ambiguous query/CDN route.
-    if !state.config.access.maven_url_allowed(name, repo, &url) {
+    if !state.config.access.url_allowed(name, repo, &url) {
         return Ok(failure(StatusCode::FORBIDDEN, "namespace_owned_elsewhere"));
     }
     if principal.is_some_and(|p| !p.allows_url(name, repo, Action::Read, &url)) {
@@ -686,7 +689,7 @@ pub fn response(
 async fn capabilities() -> Json<Value> {
     Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"ecosystems":["npm","pypi","cargo","maven","nuget"],
-        "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases"],"cross_repository_promotion":"sealed_maven_copy_requires_fresh_destination_approval","oci_serving":false,
+        "status":"experimental", "hosted_publishing":true,"hosted_ecosystems":["maven_immutable_releases","nuget_immutable_releases"],"cross_repository_promotion":"sealed_copy_requires_fresh_destination_approval","nuget_signature_verification":false,"oci_serving":false,
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "vulnerabilities":"mapped_or_observed_osv_driver_requires_pinned_offline_databases","source_posture":"hipcheck_driver_requires_source_mappings_and_pinned_policy",

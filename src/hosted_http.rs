@@ -38,11 +38,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn_with_state(state, authenticate))
 }
 
-fn failure(status: StatusCode, error: &'static str) -> Response {
+pub(crate) fn failure(status: StatusCode, error: &'static str) -> Response {
     (status, Json(json!({"error":error}))).into_response()
 }
 
-fn error(error: HostedError) -> Response {
+pub(crate) fn error(error: HostedError) -> Response {
     match error {
         HostedError::NotFound => failure(StatusCode::NOT_FOUND, "release_not_found"),
         HostedError::Invalid(_) => failure(StatusCode::BAD_REQUEST, "invalid_release"),
@@ -70,19 +70,25 @@ async fn authenticate(State(state): State<AppState>, mut request: Request, next:
     }
 }
 
-fn allowed(state: &AppState, principal: &Principal, stage: &Stage, action: Action) -> bool {
-    let Some(group) = stage.package.namespace.as_deref() else {
-        return false;
-    };
+pub(crate) fn allowed(
+    state: &AppState,
+    principal: &Principal,
+    stage: &Stage,
+    action: Action,
+) -> bool {
     state
         .config
         .repositories
         .get(&stage.repository)
         .is_some_and(|repo| {
             repo.kind == RepositoryKind::Hosted
-                && repo.ecosystem == Ecosystem::Maven
-                && principal.allows(&stage.repository, action, Some(group))
-                && state.config.access.owner_allowed(&stage.repository, group)
+                && matches!(repo.ecosystem, Ecosystem::Maven | Ecosystem::Nuget)
+                && repo.ecosystem == stage.package.ecosystem
+                && principal.allows_package(&stage.repository, action, &stage.package)
+                && state
+                    .config
+                    .access
+                    .package_owner_allowed(&stage.repository, &stage.package)
         })
 }
 
@@ -104,31 +110,35 @@ async fn create(
     let Some(repo) = state.config.repositories.get(&name) else {
         return failure(StatusCode::NOT_FOUND, "repository_not_found");
     };
-    if repo.kind != RepositoryKind::Hosted || repo.ecosystem != Ecosystem::Maven {
-        return failure(StatusCode::BAD_REQUEST, "hosted_maven_repository_required");
+    if repo.kind != RepositoryKind::Hosted
+        || !matches!(repo.ecosystem, Ecosystem::Maven | Ecosystem::Nuget)
+    {
+        return failure(StatusCode::BAD_REQUEST, "hosted_repository_required");
     }
-    let Ok(coordinate) = Coordinate::new(&request.name, &request.version) else {
+    let package = match repo.ecosystem {
+        Ecosystem::Maven => Coordinate::new(&request.name, &request.version).map(|c| c.package()),
+        Ecosystem::Nuget => {
+            crate::nuget::Coordinate::new(&request.name, &request.version).map(|c| c.package())
+        }
+        _ => unreachable!(),
+    };
+    let Ok(package) = package else {
         return failure(StatusCode::BAD_REQUEST, "invalid_coordinates");
     };
-    if !principal.allows(&name, Action::Write, Some(&coordinate.group))
-        || !state.config.access.owner_allowed(&name, &coordinate.group)
+    if !principal.allows_package(&name, Action::Write, &package)
+        || !state.config.access.package_owner_allowed(&name, &package)
     {
         return failure(StatusCode::FORBIDDEN, "publication_access_denied");
     }
-    match hosted::create_stage(
-        &state.store,
-        request.id,
-        &name,
-        coordinate.package(),
-        &principal.id,
-    )
-    .await
-    {
+    match hosted::create_stage(&state.store, request.id, &name, package, &principal.id).await {
         Ok(stage) => {
-            let upload_url = state
-                .config
-                .public_url
-                .join(&format!("api/v1/staging/{}/", stage.id));
+            let upload_url = state.config.public_url.join(&if stage.package.ecosystem
+                == Ecosystem::Nuget
+            {
+                format!("api/v1/staging/{}/nuget/index.json", stage.id)
+            } else {
+                format!("api/v1/staging/{}/", stage.id)
+            });
             match upload_url {
                 Ok(upload_url) => (
                     StatusCode::CREATED,
@@ -200,9 +210,6 @@ async fn copy(
         Ok(stage) => stage,
         Err(e) => return error(e),
     };
-    let Some(group) = source.package.namespace.as_deref() else {
-        return failure(StatusCode::BAD_REQUEST, "invalid_coordinates");
-    };
     let Some(destination) = state
         .config
         .repositories
@@ -211,16 +218,25 @@ async fn copy(
         return failure(StatusCode::NOT_FOUND, "repository_not_found");
     };
     if !allowed(&state, &principal, &source, Action::Read)
-        || !principal.allows_copy(&source.repository, &request.destination_repository, group)
+        || !principal.allows_package_copy(
+            &source.repository,
+            &request.destination_repository,
+            &source.package,
+        )
         || !state
             .config
             .access
-            .owner_allowed(&request.destination_repository, group)
+            .package_owner_allowed(&request.destination_repository, &source.package)
     {
         return failure(StatusCode::FORBIDDEN, "copy_access_denied");
     }
-    if destination.kind != RepositoryKind::Hosted || destination.ecosystem != Ecosystem::Maven {
-        return failure(StatusCode::BAD_REQUEST, "hosted_maven_repository_required");
+    if destination.kind != RepositoryKind::Hosted
+        || destination.ecosystem != source.package.ecosystem
+    {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "matching_hosted_repository_required",
+        );
     }
     let existing = match hosted::lineage(&state.store, request.id).await {
         Ok(receipt) => receipt,
@@ -266,6 +282,9 @@ async fn upload(
     // Inspect the original URI too: Axum's decoded wildcard must not hide encoded separators.
     if uri.query().is_some() || uri.path().contains('%') {
         return failure(StatusCode::BAD_REQUEST, "noncanonical_publication_path");
+    }
+    if stage.package.ecosystem == Ecosystem::Nuget {
+        return crate::hosted_nuget::upload_raw(&state, &principal, &stage, &path, request).await;
     }
     let Ok(coordinate) = Coordinate::new(&stage.package.name, &stage.package.version) else {
         return failure(StatusCode::BAD_REQUEST, "invalid_coordinates");
@@ -374,6 +393,9 @@ async fn staging_resource(
     if !allowed(&state, &principal, &stage, Action::Write) || stage.owner != principal.id {
         return failure(StatusCode::FORBIDDEN, "publication_access_denied");
     }
+    if stage.package.ecosystem == Ecosystem::Nuget {
+        return failure(StatusCode::NOT_FOUND, "staging_resource_not_public");
+    }
     if uri.query().is_some()
         || uri.path().contains('%')
         || Coordinate::new(&stage.package.name, &stage.package.version)
@@ -471,6 +493,9 @@ async fn validate_release(
     state: &AppState,
     stage: &Stage,
 ) -> std::result::Result<(), Box<Response>> {
+    if stage.package.ecosystem == Ecosystem::Nuget {
+        return crate::hosted_nuget::validate_release(state, stage).await;
+    }
     let reject = |status, code| Box::new(failure(status, code));
     let files = hosted::stage_files(&state.store, stage.id)
         .await
@@ -558,6 +583,14 @@ pub async fn download(
     uri: &Uri,
     headers: &HeaderMap,
 ) -> Result<Response> {
+    if state
+        .config
+        .repositories
+        .get(name)
+        .is_some_and(|r| r.ecosystem == Ecosystem::Nuget)
+    {
+        return crate::hosted_nuget::download(state, name, path, uri, headers).await;
+    }
     if uri.query().is_some() || uri.path().contains('%') {
         return Ok(failure(
             StatusCode::BAD_REQUEST,

@@ -1,8 +1,8 @@
 # Promotion between hosted repositories
 
-Packweir 0.5.0 supports copying a published immutable Maven release into a sealed stage in another hosted repository. Original bytes and coordinates stay unchanged. The destination gets its own manifest, delivery identities, jobs, policy evaluation, and publication decision.
+Packweir supports copying a published immutable Maven release or NuGet package into a sealed stage in another hosted repository of the same ecosystem. Original bytes and coordinates stay unchanged. The destination gets its own manifest, delivery identities, jobs, policy evaluation, and publication decision.
 
-This extends the [hosted release workflow](hosted.md). Other hosted ecosystems, remote/federated repository transfer, storage-provider migration, signing, and review/exception workflows remain unfinished.
+This extends the [hosted Maven](hosted.md) and [hosted NuGet](nuget.md) workflows. Other hosted ecosystems, remote/federated repository transfer, storage-provider migration, signing, and review/exception workflows remain unfinished.
 
 ## Configure explicit sources and permissions
 
@@ -48,7 +48,7 @@ actions = ["promote"]
 
 Configure a trusted `release_review` scanner, or replace it with the actual checks required by the destination. A missing or unsupported required check keeps the destination pending. The qualification fixture's review adapter is test code, not a production security or human-review integration.
 
-Additional ownership repositories must be explicit hosted Maven repositories. They do not create a repository group or enable fallback. The reserved group remains blocked in every other Maven repository, including public proxies. Overlapping ownership rules must describe the same complete authoritative set. Namespace boundaries and each principal's independent grants still apply. Up to 16 additional repositories are supported per ownership rule.
+Additional ownership repositories must be explicit hosted repositories of the same ecosystem. They do not create a repository group or enable fallback. The reserved group remains blocked in every other Maven repository, including public proxies. NuGet uses `access.nuget_owners` and canonical ID prefixes with the same explicit authoritative-set rule. Overlapping ownership rules must describe the same complete authoritative set. Scope boundaries and each principal's independent grants still apply. Up to 16 additional repositories are supported per ownership rule.
 
 The copy service must have **read on the source and write on the destination** for the release's group. A source promotion permission alone does not authorize reading its bytes. Destination promotion is independent. Administrative credentials cannot implicitly copy. Configure consumer read grants and consider disabling global legacy read as explained in [hosted credentials](hosted.md).
 
