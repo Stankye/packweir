@@ -122,6 +122,7 @@ pub fn router(state: AppState) -> Router {
         .merge(admin)
         .merge(crate::exchange::router(state.clone()))
         .merge(crate::remote_http::router(state.clone()))
+        .merge(crate::analysis_outputs::router(state.clone()))
         .merge(crate::hosted_http::router(state.clone()))
         .merge(crate::hosted_nuget::router(state.clone()))
         .merge(packages)
@@ -633,7 +634,7 @@ async fn gate(
                 // bytes, so deletion cannot race newly committed references.
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('packweir.cas.retention:' || $1,0))")
                     .bind(&artifact.digest).execute(&mut *tx).await?;
-                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running')) OR EXISTS(SELECT 1 FROM hosted_files WHERE digest=$1) OR EXISTS(SELECT 1 FROM external_import_blobs WHERE digest=$1)")
+                let referenced:bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM artifacts WHERE digest=$1 AND repository=ANY($2)) OR EXISTS(SELECT 1 FROM jobs WHERE subject=$1 AND state IN ('queued','running')) OR EXISTS(SELECT 1 FROM hosted_files WHERE digest=$1) OR EXISTS(SELECT 1 FROM external_import_blobs WHERE digest=$1) OR EXISTS(SELECT 1 FROM analysis_outputs WHERE output_sha256=$1)")
                     .bind(&artifact.digest).bind(&retained).fetch_one(&mut *tx).await?;
                 if !referenced {
                     state.blobs.delete(&artifact.digest).await?;
@@ -704,6 +705,7 @@ async fn capabilities() -> Json<Value> {
         "delivery_contexts":{"observed_package_identity":true,"additive_policy_scopes":true,"explanations":true,"publisher_identity_verified_by_path":false},
         "conditional_agent_escalation":true,
         "assemblyline_v4":{"scheduling":"durable_deferred_polling","approval":"pinned_applicable_service_and_local_inventory_coverage","ambiguous_submission":"administrative_reconciliation","live_instance_qualification":"isolated_extract_and_yara_profile","empty_files":"explicit_content_exception_required"},
+        "binary_analysis":{"provider":"operator_installed_assemblyline_ghidra","qualified_formats":["amd64_elf64_little_endian","amd64_pe32plus"],"scope":"bounded_static_observations","derivations":"source_span_hashes_and_independent_xor_recomputation","outputs":"immutable_context_bound_cas_receipts","malware_safety_claim":false},
         "oci_evidence_exchange":{"layout_version":"1.0.0","manifest_version":"1.1.1","import_trust":"unverified_foreign_claim","approval_effect":"none","registry_transport":"external_oras_cli"},
         "checks":{"inventory":"builtin","provenance":"source_bound_slsa_driver_or_operator_adapter","agent":"operator_adapter_required",
         "characteristics":"pinned_ossgadget_application_inspector_helper_with_bounded_text_coverage",

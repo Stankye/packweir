@@ -1,0 +1,19 @@
+name: PackweirGhidra
+version: 4.7.0.1
+description: Bounded real Ghidra static binary observations and file-backed constant-XOR derivations; no target-code execution or malware-safety conclusion.
+accepts: executable/(linux|windows)/.*
+rejects: empty|metadata/.*
+stage: CORE
+category: Static Analysis
+file_required: true
+timeout: 150
+enabled: true
+is_external: false
+privileged: false
+disable_cache: false
+config: {}
+heuristics: []
+docker_config:
+  image: packweir/assemblyline-ghidra:qualification-v1
+  cpu_cores: 2.0
+  ram_mb: 4096

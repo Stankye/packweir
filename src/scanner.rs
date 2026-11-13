@@ -272,6 +272,7 @@ fn checkpoint_current(checkpoint: &AnalysisCheckpoint, job: &Job) -> Result<bool
 }
 
 pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Job) -> Result<()> {
+    let mut derived_outputs = Vec::new();
     let scope = store.job_scope(job.id).await?;
     if let Some(scope) = &scope {
         ensure!(
@@ -393,7 +394,7 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
     if !findings.iter().any(|e| {
         e.outcome == Outcome::Fail && ["inventory", "archive_safety"].contains(&e.check.as_str())
     }) {
-        let bytes = blobs.read(&job.subject).await?;
+        let bytes: Arc<[u8]> = blobs.read(&job.subject).await?.into();
         let bundle = if let Some(bundle) = saved_bundle.take() {
             bundle
         } else {
@@ -465,6 +466,9 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
                     next_poll = Some(next_poll.map_or(next, |current| current.min(next)));
                 }
                 crate::assemblyline_http::Step::Finished(output) => {
+                    if remote.assemblyline().binary_analysis.is_some() {
+                        derived_outputs.extend(crate::binary_remote::drafts(name, &output)?);
+                    }
                     let mut result = evidence(
                         config,
                         job,
@@ -556,7 +560,13 @@ pub async fn analyze(config: &Config, store: &Store, blobs: &BlobStore, job: &Jo
             policy.escalation_state(&job.subject, &job.configuration, &findings, Utc::now());
         findings.push(skipped_agent(config, job, "unsafe_archive", &state));
     }
-    store.complete(job, &findings).await?;
+    if derived_outputs.is_empty() {
+        store.complete(job, &findings).await?;
+    } else {
+        store
+            .complete_with_outputs(job, &findings, &derived_outputs, blobs)
+            .await?;
+    }
     store
         .audit(
             "analysis_completed",

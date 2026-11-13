@@ -1,0 +1,74 @@
+name: Ghidra live qualification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    # Public ubuntu-24.04: 4 CPUs, 16 GB RAM, 14 GB advertised SSD.
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    # Full AL+Ghidra+PostgreSQL limits total9GiB; Rust/fixture builds run first.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Check bounded runner resources
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          docker compose version
+          python3 - <<'PY'
+          import os, shutil, subprocess
+          from pathlib import Path
+          docker_root=Path(subprocess.check_output(['docker','info','--format','{{.DockerRootDir}}'],text=True).strip())
+          for name,path in [('workspace',Path(os.environ['GITHUB_WORKSPACE'])),('Docker',docker_root)]:
+              free=shutil.disk_usage(path).free
+              print(f'{name}: {free/1024**3:.2f} GiB free')
+              if free<12*1024**3:
+                  raise SystemExit('At least12GiB free is required; no runner files were deleted')
+          PY
+          if [ "$(sysctl -n vm.max_map_count)" -lt 262144 ]; then
+            sudo sysctl -w vm.max_map_count=262144
+          fi
+      - name: Qualify actual decompilation, derived outputs, and native pip delivery
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=INT --kill-after=240s 40m \
+            python3 tests/ghidra/run.py --output target/ghidra-live/ci
+      - name: Stage verified public evidence
+        if: always()
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/ghidra/stage_evidence.py \
+            --source target/ghidra-live/ci --destination target/ghidra-live-evidence
+      - name: Upload sanitized qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghidra-live-qualification
+          path: target/ghidra-live-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6

@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY zig.tar.xz /tmp/zig.tar.xz
+RUN python -c "import hashlib,pathlib,tarfile; p=pathlib.Path('/tmp/zig.tar.xz'); assert p.stat().st_size==53733924 and hashlib.sha256(p.read_bytes()).hexdigest()=='02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239'; tarfile.open(p).extractall('/opt',filter='data'); p.unlink()"
+ENV PATH=/opt/zig-x86_64-linux-0.15.2:$PATH
+ENV ZIG_GLOBAL_CACHE_DIR=/tmp/zig-global-cache
+ENV ZIG_LOCAL_CACHE_DIR=/tmp/zig-local-cache
+ENTRYPOINT ["zig"]

@@ -65,6 +65,8 @@ The integration must retain the original artifact digest, submission identifier,
 
 Use a dedicated least-privilege instance credential and explicit upload/classification/retention policy. Uploading private packages, extracted binaries, or deobfuscated content requires an operator-configured destination and data-sharing policy. Packweir must not assume a remote instance includes Ghidra, dynamic execution, or any other optional service. Cache reuse must account for service configuration, signatures/rules revisions, and evidence freshness.
 
+Version 0.11.0 provides an optional [real Ghidra SDK service](binary-analysis.md) with explicit binary coverage, bounded C/p-code exports, checked constant-XOR derivations, and context-bound output receipts. It requires deliberate installation and profile qualification. Local byte inspection forces binary coverage even when the remote classifier is wrong, and verified decoded archives receive their own descendant checks. Derived products do not become package approvals or source input documents.
+
 Qualification needs a controlled Assemblyline instance plus fixtures for completed analysis, partial service failure, timeout, duplicate submission, retry/restart recovery, digest mismatch, changed policy during analysis, and extracted-child attribution. See the upstream [ingestion model](https://cybercentrecanada.github.io/assemblyline4_docs/integration/ingestion_method/), [REST API](https://cybercentrecanada.github.io/assemblyline4_docs/integration/rest/), and [authentication guidance](https://cybercentrecanada.github.io/assemblyline4_docs/integration/authentication/).
 
 ## Agent escalation

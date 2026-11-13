@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-11-12",
+  "scope": "Compile harmless static-analysis fixture bytes; generated binaries are never executed",
+  "base_image": "python:3.13-slim-bookworm@sha256:281d39ff02e3b389401586134ff9e6572954687822a58055ec07a60ded4e0b7f",
+  "compiler": {
+    "name": "Zig bundled Clang and linker",
+    "version": "0.15.2",
+    "source_url": "https://github.com/ziglang/zig",
+    "source_commit": "3eac10ac2933d96a71a90a1424659238169d5f28",
+    "metadata_url": "https://ziglang.org/download/index.json",
+    "url": "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz",
+    "size": 53733924,
+    "sha256": "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239",
+    "binary_sha256": "2858dc89dbbfdd08cceda1b841e7fd0a793a1a67b49f150bc3d0d1de44ed7f51",
+    "license_sha256": "5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177"
+  },
+  "limits": {
+    "memory_mib": 1024,
+    "cpus": 2,
+    "pids": 128,
+    "compile_timeout_seconds": 120
+  },
+  "targets": {
+    "elf64": "x86_64-linux-musl",
+    "pe32plus": "x86_64-windows-gnu"
+  }
+}

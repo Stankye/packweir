@@ -22,6 +22,7 @@ The repository contains the initial proxy, evidence, policy, storage, and worker
 - Content-addressed OpenDAL filesystem/S3 storage, verified reads, and optional post-delivery retention.
 - [OCI evidence export/import](docs/oci-exchange.md), offline layout validation, immutable foreign-claim receipts, and real ORAS interoperability qualification.
 - Experimental [Assemblyline v4 analysis](docs/assemblyline.md): durable submissions, deferred polling, pinned applicable-service coverage, native inventory reconciliation, and an isolated live Extract/YARA qualification suite.
+- Optional [Ghidra binary observations](docs/binary-analysis.md), independently checked constant-XOR derivations, decoded-file analysis coverage, and context-bound OpenDAL output receipts.
 - PostgreSQL-backed artifacts, leased jobs, evidence, source-document revisions, decisions, and audit events.
 - Fail-closed policy evaluation: a missing, unsupported, failed, expired, or inconclusive required check cannot approve delivery.
 - Bounded archive inventory, native-binary identification, and observed CycloneDX 1.6/SPDX 2.3 file inventories.

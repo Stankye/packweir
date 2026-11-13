@@ -42,10 +42,22 @@ def write_json(path, value):
 
 
 def source_proof():
-    files = [ROOT / name for name in ("Cargo.toml", "Cargo.lock", "build.rs")]
-    for directory in ("src", "migrations", "tests", "tools"):
-        files.extend(path for path in (ROOT / directory).rglob("*")
-                     if path.is_file() and "__pycache__" not in path.parts)
+    # Include new source before commit, but not Git-ignored build products such
+    # as a native helper's bin/obj DLLs. These are source inputs, not a snapshot
+    # of every generated file that happens to live beneath a source directory.
+    listed = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=ROOT)
+    files = []
+    for name in listed.split(b"\0"):
+        if not name:
+            continue
+        relative = Path(os.fsdecode(name))
+        if relative.as_posix() not in ("Cargo.toml", "Cargo.lock", "build.rs") and relative.parts[0] not in (
+            "src", "migrations", "tests", "tools"):
+            continue
+        path = ROOT / relative
+        if path.is_file() and not path.is_symlink() and "__pycache__" not in relative.parts:
+            files.append(path)
     hashes = {path.relative_to(ROOT).as_posix(): digest(path.read_bytes()) for path in sorted(set(files))}
     return {"sha256": digest(json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()), "files": hashes}
 

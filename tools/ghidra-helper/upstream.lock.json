@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "ghidra": {
+    "version": "12.2",
+    "tag": "Ghidra_12.2_build",
+    "commit": "8ca9077040cc43cd790babcfccf19475622a3e9a",
+    "repository": "https://github.com/NationalSecurityAgency/ghidra",
+    "release_api": "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.2_build",
+    "asset": "ghidra_12.2_PUBLIC_20261016.zip",
+    "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip",
+    "size": 569712708,
+    "sha256": "2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67",
+    "authentication": "official HTTPS release metadata and matching published/asset SHA256; no detached vendor signature is claimed"
+  },
+  "jdk": {
+    "vendor": "Eclipse Temurin",
+    "version": "25.0.5+8",
+    "tag": "jdk-25.0.5+8",
+    "repository": "https://github.com/adoptium/temurin25-binaries",
+    "release_api": "https://api.github.com/repos/adoptium/temurin25-binaries/releases/tags/jdk-25.0.5%2B8",
+    "asset": "OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
+    "url": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_x64_linux_hotspot_25.0.5_8.tar.gz",
+    "size": 141341188,
+    "sha256": "68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb",
+    "authentication": "official HTTPS release metadata and matching asset SHA256"
+  },
+  "assemblyline_sdk": {
+    "repository": "https://github.com/CybercentreCanada/assemblyline-v4-service",
+    "tag": "v4.7.4.stable11",
+    "commit": "f30da537e3adbee7c5c46e694a1ee15c4dc1cb87",
+    "service_base_image": "cccs/assemblyline-v4-service-base@sha256:ed471817fee053dac2e2d73ccbb79b2ee6edc44030725d3e74b5c5a825d4534c"
+  }
+}

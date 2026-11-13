@@ -47,6 +47,7 @@ def main():
             ds.heuristic.save(item['heur_id'], Heuristic(item))
         # These are SDK manifest fields, not fields in the installed service model.
         raw.pop('file_required', None)
+        raw.pop('tool_version', None)
         if name == 'Extract':
             # Keep evaluating the archive after extraction; all real child files
             # still pass independently through the normal dispatcher pipeline.

@@ -14,6 +14,15 @@ bytes. A wrapper source change therefore changes the actual upstream cache
 configuration key even when the manifest version is unchanged. Qualification
 compares this reported digest with the runtime image and current source bytes;
 it is an integrity observation, not cryptographic service attestation.
+The image build computes this identity from its installed native engine and
+exact runtime files and writes the SDK's supported `tool_version` field into
+the image manifest. The constructor recomputes and checks that value before
+accepting tasks. The generated manifest is excluded from the framed driver
+hash to avoid a self-reference. The raw service client can therefore send the
+correct tool identity on its first task request after a restart, rather than
+learning it from the first uploaded result. The source manifest intentionally
+has no generated identity; registration must use the manifest extracted from
+the built image. This uses the upstream client lifecycle without an SDK patch.
 The SDK supplies execution milestones. This nonempty result survives the real
 Assemblyline datastore without the synthetic timestamps and lost tool revision
 of `.e` empty cached results. Exceptions, size overflow, and YARA timeout produce
@@ -37,8 +46,13 @@ require separately reviewed wheel hashes.
 `licenses/` retains the official yara-python Apache 2.0 license and the native
 YARA BSD license. The Docker image includes these notices with the service.
 
-The SDK and engine smoke tests use actual `ServiceTask` objects, the SDK task
-lifecycle, native matching, execution metadata, and the oversize error path:
+The three SDK and engine smoke cases use actual `ServiceTask` objects, the SDK
+task lifecycle, native matching, execution metadata, and the oversize error
+path. An additional identity case rejects missing or substituted baked values;
+the real raw service client also loads the baked identity before any request.
+Run the tests against the rebuilt image. The `/source` mount compares source
+hashes and supplies the test file; it does not replace the installed driver or
+the baked manifest:
 
 ```sh
 docker run --rm --network none --mount type=bind,source=<absolute-tools/assemblyline-yara>,target=/source,readonly --mount type=bind,source=<qualified-classification.yml>,target=/etc/assemblyline/classification.yml,readonly --entrypoint python packweir/assemblyline-yara:qualification-v1 /source/test_service.py
@@ -47,6 +61,8 @@ docker run --rm --network none --mount type=bind,source=<absolute-tools/assembly
 The official sources are [YARA Python 4.5.4](https://github.com/VirusTotal/yara-python/tree/v4.5.4),
 [PyPI release metadata](https://pypi.org/pypi/yara-python/4.5.4/json), and the
 [Assemblyline SDK](https://github.com/CybercentreCanada/assemblyline-v4-service/tree/f30da537e3adbee7c5c46e694a1ee15c4dc1cb87).
+The initial manifest tool identity is consumed by the pinned
+[upstream raw service client](https://github.com/CybercentreCanada/assemblyline-service-client/blob/0dad0340ec19d23b9dbe599b745f2ef0b4c46f0b/assemblyline_service_client/task_handler.py#L121).
 `qualification.json` provides harmless inputs and explicit observation policy
 for pairing this service with official Extract. Its values do not establish
 that a live deployment has been tested; the live harness must record image,

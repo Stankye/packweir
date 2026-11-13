@@ -26,5 +26,17 @@
     "MINIO_IMAGE": "cccs/minio@sha256:68eefa6a5ccd82178a872b2d1012687d0ac9b1afa848a1e56f55fa5f1efcb081"
   },
   "memory_limit_mib": 4864,
-  "bootstrap_peak_memory_limit_mib": 5376
+  "bootstrap_peak_memory_limit_mib": 5376,
+  "optional_profiles": {
+    "ghidra": {
+      "services": ["Extract", "PackweirYARA", "PackweirGhidra"],
+      "tool_lock": "tools/ghidra-helper/upstream.lock.json",
+      "memory_limit_mib": 8960,
+      "bootstrap_peak_memory_limit_mib": 9472,
+      "product_database_memory_mib": 256,
+      "qualification_budget_mib": 10240,
+      "ghidra_worker_memory_mib": 4096,
+      "ghidra_worker_cpus": 2
+    }
+  }
 }

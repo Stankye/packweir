@@ -116,6 +116,17 @@ services:
       SERVICE_TAG: 4.7.0.1
     profiles: [analysis]
     depends_on: [service-server]
+  ghidra:
+    <<: *worker
+    image: ${GHIDRA_IMAGE:-packweir/assemblyline-ghidra:unbuilt}
+    mem_limit: 4096m
+    cpus: 2.0
+    environment:
+      SERVICE_API_HOST: http://service-server:5003
+      SERVICE_API_KEY: ${SERVICE_API_KEY}
+      SERVICE_TAG: 4.7.0.1
+    profiles: [ghidra]
+    depends_on: [service-server]
   bootstrap:
     <<: *common
     image: ${CORE_IMAGE}

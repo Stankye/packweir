@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://packweir.invalid/schemas/binary-analysis.v1.json",
+  "title": "Packweir binary analysis and derivation observations v1",
+  "description": "A bounded observation contract, not a malware-safety verdict. Serialized JSON is limited to 524288 bytes and decoded inline outputs to 262144 bytes combined. Duplicate JSON fields are rejected.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "input", "producer", "analysis", "observations", "outputs"],
+  "properties": {
+    "schema_version": {"const": "packweir.binary-analysis.v1"},
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "size", "kind"],
+      "properties": {"sha256": {"$ref": "#/$defs/sha256"}, "size": {"type": "integer", "minimum": 0}, "kind": {"enum": ["elf", "pe", "wasm", "mach_o_or_java", "binary"]}}
+    },
+    "producer": {"$ref": "#/$defs/producer"},
+    "analysis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["started_at", "completed_at", "status", "timed_out", "errors", "warnings", "language_id", "compiler_spec_id", "requested_capabilities", "capabilities", "functions_total", "functions_decompiled", "functions_failed", "export_truncated", "log_sha256"],
+      "properties": {
+        "started_at": {"type": "string", "format": "date-time", "maxLength": 64},
+        "completed_at": {"type": "string", "format": "date-time", "maxLength": 64},
+        "status": {"enum": ["complete", "unsupported", "incomplete", "error"]},
+        "timed_out": {"type": "boolean"},
+        "errors": {"$ref": "#/$defs/messages", "description": "Raw execution errors are retained and always prevent completion."}, "warnings": {"$ref": "#/$defs/messages", "description": "All raw warnings are retained. Only exact reviewed strings acknowledged by the separately configured producer-pinned policy may be informational; unacknowledged warnings prevent completion."},
+        "language_id": {"type": ["string", "null"], "maxLength": 256},
+        "compiler_spec_id": {"type": ["string", "null"], "maxLength": 256},
+        "requested_capabilities": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/capability"}},
+        "capabilities": {"type": "object", "additionalProperties": false, "required": ["decompile", "pcode", "decode_xor"], "properties": {"decompile": {"$ref": "#/$defs/capability_status"}, "pcode": {"$ref": "#/$defs/capability_status"}, "decode_xor": {"$ref": "#/$defs/capability_status"}}},
+        "functions_total": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "functions_decompiled": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "functions_failed": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "export_truncated": {"type": "boolean"},
+        "log_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "observations": {
+      "type": "array", "maxItems": 2048,
+      "items": {"type": "object", "additionalProperties": false, "required": ["kind", "name", "value"], "properties": {
+        "kind": {"enum": ["header", "section", "symbol", "string", "function", "language", "compiler", "xor_candidate", "note"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "value": {"type": "string", "minLength": 1, "maxLength": 8192}
+      }}
+    },
+    "outputs": {"type": "array", "maxItems": 256, "description": "Completion of each requested decompile/pcode capability requires meaningful UTF-8 text for exactly functions_total distinct function_entry addresses; requested C and pcode entry sets must match. Missing/duplicate exports remain incomplete. This structural coverage does not prove semantic equivalence or malware safety.", "items": {"$ref": "#/$defs/output"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "capability": {"enum": ["decompile", "pcode", "decode_xor"]},
+    "capability_status": {"enum": ["complete", "unsupported", "incomplete", "error", "not_requested"]},
+    "messages": {"type": "array", "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "description": "identity_sha256 is SHA256 of compact UTF-8 JSON of all other producer fields, sorted by key, without whitespace; no Unicode normalization.",
+      "required": ["engine", "engine_version", "engine_archive_sha256", "jdk_version", "jdk_archive_sha256", "decompiler_sha256", "scripts_sha256", "profile_sha256", "driver_sha256", "identity_sha256"],
+      "properties": {
+        "engine": {"type": "string", "minLength": 1, "maxLength": 128},
+        "engine_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "engine_archive_sha256": {"$ref": "#/$defs/sha256"},
+        "jdk_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "jdk_archive_sha256": {"$ref": "#/$defs/sha256"},
+        "decompiler_sha256": {"$ref": "#/$defs/sha256"},
+        "scripts_sha256": {"$ref": "#/$defs/sha256"},
+        "profile_sha256": {"$ref": "#/$defs/sha256"},
+        "driver_sha256": {"$ref": "#/$defs/sha256"},
+        "identity_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "span": {"type": "object", "additionalProperties": false, "required": ["offset", "length", "sha256"], "properties": {"offset": {"type": "integer", "minimum": 0}, "length": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}},
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "media_type", "sha256", "size", "data_base64", "derivation"],
+      "properties": {
+        "kind": {"enum": ["decompiled_c", "pcode", "decoded_bytes"]},
+        "media_type": {"enum": ["text/x-c", "text/plain", "application/octet-stream"]},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"type": "integer", "minimum": 1, "maximum": 262144},
+        "data_base64": {"type": "string", "contentEncoding": "base64", "maxLength": 349528},
+        "derivation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["operation", "version", "input_sha256", "parameters", "source_spans"],
+          "properties": {
+            "operation": {"enum": ["ghidra.decompile", "ghidra.pcode", "xor.decode"]},
+            "version": {"type": "string", "minLength": 1, "maxLength": 128},
+            "input_sha256": {"$ref": "#/$defs/sha256"},
+            "parameters": {"type": "object", "maxProperties": 64, "properties": {"function_entry": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$", "description": "Full tool memory address for a C/pcode function; required for complete function coverage."}}, "additionalProperties": {"type": ["string", "integer", "number", "boolean", "null"], "maxLength": 4096}},
+            "source_spans": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/span"}}
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "decompiled_c"}}}, "then": {"properties": {"media_type": {"const": "text/x-c"}, "derivation": {"properties": {"operation": {"const": "ghidra.decompile"}}}}}},
+        {"if": {"properties": {"kind": {"const": "pcode"}}}, "then": {"properties": {"media_type": {"const": "text/plain"}, "derivation": {"properties": {"operation": {"const": "ghidra.pcode"}}}}}},
+        {
+          "if": {"properties": {"kind": {"const": "decoded_bytes"}}},
+          "then": {
+            "properties": {
+              "media_type": {"const": "application/octet-stream"},
+              "derivation": {
+                "properties": {
+                  "operation": {"const": "xor.decode"},
+                  "version": {"const": "1"},
+                  "source_spans": {"maxItems": 1},
+                  "parameters": {
+                    "type": "object", "additionalProperties": false, "required": ["key_hex"],
+                    "properties": {"key_hex": {"type": "string", "pattern": "^(?:[0-9a-f]{2}){1,32}$"}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

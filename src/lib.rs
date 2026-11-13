@@ -1,7 +1,10 @@
 pub mod access;
 pub mod analysis_coverage;
+pub mod analysis_outputs;
 pub mod assemblyline;
 pub mod assemblyline_http;
+pub mod binary_analysis;
+pub mod binary_remote;
 pub mod bounds;
 pub mod config;
 mod drivers;

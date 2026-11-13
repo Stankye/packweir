@@ -406,6 +406,27 @@ impl Store {
         Ok(())
     }
     pub async fn complete(&self, job: &Job, evidence: &[Evidence]) -> Result<()> {
+        self.complete_analysis(job, evidence, None).await
+    }
+    pub async fn complete_with_outputs(
+        &self,
+        job: &Job,
+        evidence: &[Evidence],
+        outputs: &[crate::analysis_outputs::OutputDraft],
+        blobs: &crate::storage::BlobStore,
+    ) -> Result<()> {
+        self.complete_analysis(job, evidence, Some((outputs, blobs)))
+            .await
+    }
+    async fn complete_analysis(
+        &self,
+        job: &Job,
+        evidence: &[Evidence],
+        outputs: Option<(
+            &[crate::analysis_outputs::OutputDraft],
+            &crate::storage::BlobStore,
+        )>,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let current: i64 =
             sqlx::query_scalar("SELECT revision FROM contexts WHERE subject=$1 FOR UPDATE")
@@ -418,8 +439,8 @@ impl Store {
         );
         // Both context and job locks may wait. Evaluate the clock only after the
         // row lock is acquired, not in a predicate evaluated before LockRows.
-        let locked = sqlx::query("SELECT lease_until FROM jobs WHERE id=$1 AND lease_token=$2 AND state='running' FOR UPDATE")
-            .bind(job.id).bind(job.lease).fetch_optional(&mut *tx).await?;
+        let locked = sqlx::query("SELECT lease_until FROM jobs WHERE id=$1 AND lease_token=$2 AND state='running' AND subject=$3 AND configuration=$4 AND context_revision=$5 FOR UPDATE")
+            .bind(job.id).bind(job.lease).bind(&job.subject).bind(&job.configuration).bind(job.context_revision).fetch_optional(&mut *tx).await?;
         let locked = locked.ok_or_else(|| anyhow::anyhow!("job lease lost"))?;
         let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
@@ -430,13 +451,31 @@ impl Store {
                 .is_some_and(|until| until > now),
             "job lease expired while waiting for locks"
         );
+        let mut evidence_ids = std::collections::BTreeMap::new();
         for e in evidence {
             ensure!(
                 e.subject == job.subject && e.configuration == job.configuration,
                 "evidence binding mismatch"
             );
+            let evidence_id = Uuid::new_v4();
+            ensure!(
+                evidence_ids.insert(e.check.clone(), evidence_id).is_none() || outputs.is_none(),
+                "derived outputs require unambiguous producing evidence"
+            );
             sqlx::query("INSERT INTO evidence(id,subject,check_name,configuration,created_at,expires_at,document,context_revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-                .bind(Uuid::new_v4()).bind(&e.subject).bind(&e.check).bind(&e.configuration).bind(e.created_at).bind(e.expires_at).bind(serde_json::to_value(e)?).bind(job.context_revision).execute(&mut *tx).await?;
+                .bind(evidence_id).bind(&e.subject).bind(&e.check).bind(&e.configuration).bind(e.created_at).bind(e.expires_at).bind(serde_json::to_value(e)?).bind(job.context_revision).execute(&mut *tx).await?;
+        }
+        if let Some((outputs, blobs)) = outputs {
+            crate::analysis_outputs::persist(&mut tx, job, evidence, &evidence_ids, outputs, blobs)
+                .await?;
+            // CAS writes and digest-lock waits can outlive the original permit.
+            // The context/job locks stay held; evaluate the clock again now.
+            let valid: bool =
+                sqlx::query_scalar("SELECT lease_until>clock_timestamp() FROM jobs WHERE id=$1")
+                    .bind(job.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            ensure!(valid, "job lease expired while storing derived outputs");
         }
         sqlx::query("UPDATE jobs SET state='complete',lease_until=NULL WHERE id=$1")
             .bind(job.id)

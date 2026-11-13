@@ -53,7 +53,7 @@ The report must match the expected toolchain, mode, rule pin, exact input file s
 - Partial/binary coverage remains `inconclusive`. A completed text scan does not imply complete package or native-binary analysis.
 - Execution and invalid-input/report failures produce `error` evidence. Missing required coverage continues to hold delivery.
 
-Use explicit policies for these observations. Requiring the check on packages containing unsupported binaries will keep those packages pending until additional qualified analysis is available. Ghidra, deobfuscation, Assemblyline services, OSSGadget source/reproducibility/download tools, and malware classification remain separate work.
+Use explicit policies for these observations. A required unsupported OSSGadget check keeps delivery pending; another scanner cannot silently waive that requirement. Optional [Ghidra binary observations and bounded transformations](binary-analysis.md) provide a separate analysis category and output provenance. Broader deobfuscation, additional Assemblyline services, remaining OSSGadget tools, and production malware classification need further work.
 
 ## Qualification
 

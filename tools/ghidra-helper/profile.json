@@ -1,0 +1,23 @@
+{
+  "profile_version": "packweir-ghidra-static-v1",
+  "max_file_bytes": 16777216,
+  "max_functions": 32,
+  "max_observations": 1024,
+  "max_string_bytes": 256,
+  "max_strings": 64,
+  "max_output_bytes": 262144,
+  "max_manifest_bytes": 524288,
+  "max_log_bytes": 1048576,
+  "analysis_timeout_seconds": 60,
+  "decompile_timeout_seconds": 5,
+  "process_timeout_seconds": 120,
+  "process_group_stop_timeout_seconds": 2,
+  "heap": "1536m",
+  "max_cpu": 2,
+  "capabilities": ["decompile", "pcode", "decode_xor"],
+  "formats": ["elf", "pe"],
+  "analysis_options": {"PDB Universal": false},
+  "xor_regions": [],
+  "qualification_xor_frame": {"section": ".pw_xor", "key_hex": "5a"},
+  "max_xor_bytes": 4096
+}

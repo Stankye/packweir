@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yara
 from assemblyline_v4_service.common.base import ServiceBase
+from assemblyline_v4_service.common.helper import get_service_manifest
 from assemblyline_v4_service.common.result import ResultSection
 
 MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -30,24 +31,48 @@ def driver_sha256():
     return digest.hexdigest()
 
 
+def runtime_identity():
+    """Read the installed native engine and immutable runtime inputs."""
+    binding_version = importlib.metadata.version("yara-python")
+    engine_version = yara.YARA_VERSION
+    if binding_version != ENGINE_VERSION or engine_version != ENGINE_VERSION:
+        raise RuntimeError("YARA binding or native engine differs from the qualified pin")
+    rule_bytes = RULE_PATH.read_bytes()
+    if not rule_bytes or len(rule_bytes) > MAX_RULE_BYTES:
+        raise RuntimeError("YARA rules are empty or exceed the qualified bound")
+    return {
+        "binding_version": binding_version,
+        "engine_version": engine_version,
+        "rules_sha256": hashlib.sha256(rule_bytes).hexdigest(),
+        "driver_sha256": driver_sha256(),
+    }, rule_bytes
+
+
+def identity_tool_version(identity):
+    value = (f"yara-python/{identity['binding_version']}.yara/{identity['engine_version']}"
+             f".rules/{identity['rules_sha256']}.driver/{identity['driver_sha256']}")
+    if len(value) >= 256:
+        raise RuntimeError("YARA tool identity exceeds the qualified cache bound")
+    return value
+
+
 class PackweirYARA(ServiceBase):
     def __init__(self, config=None):
         super().__init__(config=config)
         # The real SDK queries tool identity before start_service().
-        self.binding_version = importlib.metadata.version("yara-python")
-        self.engine_version = yara.YARA_VERSION
-        if self.binding_version != ENGINE_VERSION or self.engine_version != ENGINE_VERSION:
-            raise RuntimeError("YARA binding or native engine differs from the qualified pin")
-        rule_bytes = RULE_PATH.read_bytes()
-        if not rule_bytes or len(rule_bytes) > MAX_RULE_BYTES:
-            raise RuntimeError("YARA rules are empty or exceed the qualified bound")
-        self.rule_sha256 = hashlib.sha256(rule_bytes).hexdigest()
-        self.driver_sha256 = driver_sha256()
+        identity, rule_bytes = runtime_identity()
+        self.binding_version = identity["binding_version"]
+        self.engine_version = identity["engine_version"]
+        self.rule_sha256 = identity["rules_sha256"]
+        self.driver_sha256 = identity["driver_sha256"]
+        self.tool_version = identity_tool_version(identity)
+        if get_service_manifest().get("tool_version") != self.tool_version:
+            raise RuntimeError("YARA baked manifest tool identity differs from installed runtime")
         # Includes are disabled: this rule resource is the complete rule input.
         self.rules = yara.compile(source=rule_bytes.decode("utf-8"), includes=False, error_on_warning=True)
 
     def get_tool_version(self):
-        return f"yara-python/{self.binding_version}.yara/{self.engine_version}.rules/{self.rule_sha256}.driver/{self.driver_sha256}"
+        return self.tool_version
 
     def execute(self, request):
         # Read a bounded snapshot, verify its actual digest, and scan those same

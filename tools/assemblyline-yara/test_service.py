@@ -8,22 +8,38 @@ These tests do not claim live server or dispatcher qualification.
 import hashlib
 import json
 import os
+import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from assemblyline.common import forge
 from assemblyline.common.uid import get_random_id
 from assemblyline.odm.messages.task import Task as ServiceTask
+from assemblyline_service_client.task_handler import TaskHandler
+from assemblyline_v4_service.common.helper import get_service_manifest
+# The test file is supplied at /source; select the driver's installed image
+# path explicitly so a mounted package cannot replace the runtime under test.
+sys.path.insert(0, "/opt/al_service")
+import packweir_yara.service as installed_service
 from packweir_yara.service import MAX_FILE_BYTES, PackweirYARA
 
 
 class RealSDKAndYaraTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        assert Path(installed_service.__file__).resolve() == Path("/opt/al_service/packweir_yara/service.py")
         cls.service = PackweirYARA()
         # This call order is the one used by the actual SDK run_service module.
         cls.tool_version = cls.service.get_tool_version()
+        assert get_service_manifest()["tool_version"] == cls.tool_version
+        handler = TaskHandler()
+        handler.service_manifest_yml = "/opt/al_service/service_manifest.yml"
+        handler.load_service_manifest()
+        assert handler.service_tool_version == cls.tool_version
+        handler.session.close()
         source_directory = Path(__file__).resolve().parent / "packweir_yara"
         identity = hashlib.sha256()
         for name in ["__init__.py", "service.py"]:
@@ -100,6 +116,20 @@ class RealSDKAndYaraTests(unittest.TestCase):
     def test_oversize_input_is_a_real_sdk_error(self):
         error = self.run_task(b"x" * (MAX_FILE_BYTES + 1), expected_error=True)
         self.assertIn("qualified 16 MiB", error["response"]["message"])
+
+    def test_missing_or_changed_baked_manifest_identity_is_rejected(self):
+        original = Path("/opt/al_service/service_manifest.yml").read_text()
+        variants = [
+            re.sub(r"^tool_version:.*\n?", "", original, flags=re.MULTILINE),
+            original.replace(self.tool_version, "unqualified-tool-version"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.yml"
+            for value in variants:
+                manifest.write_text(value)
+                with patch.dict(os.environ, {"SERVICE_MANIFEST_PATH": str(manifest)}):
+                    with self.assertRaisesRegex(RuntimeError, "baked manifest tool identity"):
+                        PackweirYARA()
 
 
 if __name__ == "__main__":

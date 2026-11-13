@@ -3,7 +3,7 @@ use crate::model::{FileRecord, Inventory, sha256};
 use anyhow::{Result, bail, ensure};
 use flate2::read::MultiGzDecoder;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io::{Cursor, Read},
 };
 
@@ -27,24 +27,77 @@ struct Inspector {
     used: u64,
     records: Vec<FileRecord>,
     seen: HashSet<String>,
+    binary_inputs: Option<BTreeMap<String, Vec<u8>>>,
+    binary_kinds: std::collections::BTreeSet<String>,
+    binary_bytes: usize,
 }
 
 pub fn inspect(name: &str, bytes: &[u8], limits: Limits) -> Result<Inventory> {
+    Ok(inspect_inner(name, bytes, limits, None)?.0)
+}
+
+/// Recover the exact native-file bytes with the same bounded archive parser used
+/// by inventory. These bytes stay internal to analysis; they are not documents,
+/// package registrations, or an assertion that transformed content is trusted.
+pub fn inspect_binary_inputs(
+    name: &str,
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<(Inventory, BTreeMap<String, Vec<u8>>)> {
+    let kinds = ["elf", "pe", "wasm", "mach_o_or_java"].map(str::to_owned);
+    inspect_analysis_inputs(name, bytes, limits, &kinds)
+}
+
+pub fn inspect_analysis_inputs(
+    name: &str,
+    bytes: &[u8],
+    limits: Limits,
+    kinds: &[String],
+) -> Result<(Inventory, BTreeMap<String, Vec<u8>>)> {
+    ensure!(
+        !kinds.is_empty()
+            && kinds.len() <= 5
+            && kinds
+                .iter()
+                .all(|kind| is_native_candidate(kind) || kind == "binary"),
+        "invalid analysis input kinds"
+    );
+    inspect_inner(name, bytes, limits, Some(kinds))
+}
+
+fn inspect_inner(
+    name: &str,
+    bytes: &[u8],
+    limits: Limits,
+    capture_binary_inputs: Option<&[String]>,
+) -> Result<(Inventory, BTreeMap<String, Vec<u8>>)> {
     let mut inspector = Inspector {
         limits,
         used: 0,
         records: vec![],
         seen: HashSet::new(),
+        binary_inputs: capture_binary_inputs.map(|_| BTreeMap::new()),
+        binary_kinds: capture_binary_inputs
+            .unwrap_or_default()
+            .iter()
+            .cloned()
+            .collect(),
+        binary_bytes: 0,
     };
     inspector.visit(name, bytes, 0)?;
-    Ok(Inventory {
+    let inventory = Inventory {
         subject: sha256(bytes),
         files: inspector.records,
         warnings: vec![],
         coverage:
             "bounded file inventory; dependency and native-library identification are not complete"
                 .into(),
-    })
+    };
+    Ok((inventory, inspector.binary_inputs.unwrap_or_default()))
+}
+
+pub fn is_native_candidate(kind: &str) -> bool {
+    matches!(kind, "elf" | "pe" | "wasm" | "mach_o_or_java")
 }
 
 impl Inspector {
@@ -57,11 +110,31 @@ impl Inspector {
             self.seen.insert(path.into()),
             "duplicate archive path: {path}"
         );
+        let digest = sha256(bytes);
+        let file_kind = kind(bytes);
+        if let Some(inputs) = &mut self.binary_inputs
+            && self.binary_kinds.contains(file_kind)
+            && !inputs.contains_key(&digest)
+        {
+            ensure!(
+                bytes.len() <= 16 * 1024 * 1024,
+                "native analysis input exceeds 16 MiB"
+            );
+            self.binary_bytes = self
+                .binary_bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| anyhow::anyhow!("native analysis byte count overflow"))?;
+            ensure!(
+                self.binary_bytes <= 64 * 1024 * 1024 && inputs.len() < 256,
+                "native analysis inputs exceed 64 MiB or 256 distinct files"
+            );
+            inputs.insert(digest.clone(), bytes.to_vec());
+        }
         self.records.push(FileRecord {
             path: path.into(),
-            sha256: sha256(bytes),
+            sha256: digest,
             size: bytes.len() as u64,
-            kind: kind(bytes).into(),
+            kind: file_kind.into(),
         });
         Ok(())
     }
@@ -83,7 +156,7 @@ impl Inspector {
         self.record(path, bytes)?;
         let zip = bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06");
         let gzip = bytes.starts_with(&[0x1f, 0x8b]);
-        let tar = path.ends_with(".tar") || (bytes.len() > 262 && &bytes[257..262] == b"ustar");
+        let tar = path.ends_with(".tar") || looks_like_tar(bytes);
         let unsupported = bytes.starts_with(b"BZh")
             || bytes.starts_with(b"\xfd7zXZ\0")
             || bytes.starts_with(b"7z\xbc\xaf\x27\x1c")
@@ -158,6 +231,34 @@ impl Inspector {
         }
         Ok(())
     }
+}
+
+// V7 archives have no ustar magic, and decoded files need not retain a .tar
+// suffix. Match the same unsigned header checksum used by tar::Archive. Leading
+// zero records are traversed because inspection uses set_ignore_zeros(true).
+fn looks_like_tar(bytes: &[u8]) -> bool {
+    if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
+        return true;
+    }
+    for block in bytes.as_chunks::<512>().0 {
+        if block.iter().all(|byte| *byte == 0) {
+            continue;
+        }
+        let header = tar::Header::from_byte_slice(block);
+        let checksum: u32 = block
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| {
+                if (148..156).contains(&index) {
+                    u32::from(b' ')
+                } else {
+                    u32::from(*byte)
+                }
+            })
+            .sum();
+        return header.cksum().is_ok_and(|expected| expected == checksum);
+    }
+    false
 }
 
 pub fn kind(bytes: &[u8]) -> &'static str {

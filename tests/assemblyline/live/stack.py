@@ -77,12 +77,15 @@ def _load(path):
 
 
 def _compose(state, args, **kwargs):
+    profile = ['--profile', 'ghidra'] if state.get('profile', 'default') == 'ghidra' else []
     return _run(state, ['compose', '--project-name', state['project'],
         '--file', _native(Path(state['compose_file']), state['docker']),
-        '--env-file', _native(Path(state['run_dir']) / '.env', state['docker']), *args], **kwargs)
+        '--env-file', _native(Path(state['run_dir']) / '.env', state['docker']), *profile, *args], **kwargs)
 
 
-def prepare(output: Path, docker: str | None = None) -> Path:
+def prepare(output: Path, docker: str | None = None, profile: str = 'default') -> Path:
+    if profile not in ('default', 'ghidra'):
+        raise ValueError('Unknown optional Assemblyline profile')
     output = Path(output).resolve()
     target = (ROOT / 'target').resolve()
     if output == target or target not in output.parents:
@@ -91,7 +94,8 @@ def prepare(output: Path, docker: str | None = None) -> Path:
     os.chmod(output, 0o750)
     state_path = output / 'stack-state.json'
     if state_path.exists():
-        _load(state_path)
+        if _load(state_path).get('profile', 'default') != profile:
+            raise ValueError('Use a new run directory when changing the profile')
         return state_path
     if (output / '.env').exists():
         raise ValueError('Refusing to replace an existing credentials file')
@@ -105,6 +109,7 @@ def prepare(output: Path, docker: str | None = None) -> Path:
     values.update({'AL_PORT': str(port), 'AL_ADMIN_USER': 'packweir-live',
         'RUN_GID': str(os.getgid()) if os.name != 'nt' else '1000',
         'YARA_IMAGE': f'packweir/assemblyline-yara:{project}', 'REGISTRY': '',
+        'GHIDRA_IMAGE': f'packweir/assemblyline-ghidra:{project}',
         'SERVICE_API_HOST': 'http://service-server:5003', 'WORKERS': '1',
         'THREADS': '2', 'AL_LOG_LEVEL': 'INFO'})
     (output / '.env').write_text(''.join(f'{key}={value}\n' for key, value in values.items()), encoding='utf-8')
@@ -126,6 +131,10 @@ def prepare(output: Path, docker: str | None = None) -> Path:
         'lock_file': str(output / 'stack.lock.json'),
         'lock_sha256': hashlib.sha256((output / 'stack.lock.json').read_bytes()).hexdigest(),
         'yara_image': values['YARA_IMAGE']}
+    state['profile'] = profile
+    if profile == 'ghidra':
+        state['ghidra_image'] = values['GHIDRA_IMAGE']
+        state['qualification_budget_mib'] = LOCK['optional_profiles']['ghidra']['qualification_budget_mib']
     state_path.write_text(json.dumps(state, indent=2) + '\n', encoding='utf-8')
     # POSIX permissions also apply when the harness runs on a Linux runner.
     for name in ('.env', 'stack-state.json'):
@@ -166,6 +175,23 @@ def up(path: Path, timeout=600):
     image_id = _run(state, ['image', 'inspect', state['yara_image'], '--format', '{{.Id}}']).stdout.strip()
     env_path = Path(state['run_dir']) / '.env'
     env_path.write_text(re.sub(r'^YARA_IMAGE=.*$', f'YARA_IMAGE={image_id}', env_path.read_text(), flags=re.MULTILINE), encoding='utf-8')
+    if state.get('profile', 'default') == 'ghidra':
+        # Authenticate and build the optional heavy tool before starting the
+        # runtime stack. Analysis workers still have no external network.
+        assets = ROOT / 'target/ghidra/upstream-assets'
+        provision = subprocess.run([sys.executable, str(ROOT / 'tools/ghidra-helper/provision.py'), '--output', str(assets)],
+            capture_output=True, timeout=remaining())
+        log = Path(state['run_dir']) / 'ghidra-provision.log'
+        log.write_bytes(provision.stdout + provision.stderr)
+        os.chmod(log, 0o600)
+        if provision.returncode:
+            raise RuntimeError('Pinned Ghidra/JDK acquisition failed; see ghidra-provision.log')
+        _run(state, ['build', '--file', _native(ROOT / 'tools/assemblyline-ghidra/Dockerfile', state['docker']),
+            '--build-context', 'ghidra_assets=' + _native(assets, state['docker']),
+            '--build-arg', f'SERVICE_BASE={LOCK["images"]["SERVICE_BASE_IMAGE"]}', '--tag', state['ghidra_image'],
+            _native(ROOT, state['docker'])], timeout=remaining(), log='ghidra-build.log')
+        ghidra_id = _run(state, ['image', 'inspect', state['ghidra_image'], '--format', '{{.Id}}']).stdout.strip()
+        env_path.write_text(re.sub(r'^GHIDRA_IMAGE=.*$', f'GHIDRA_IMAGE={ghidra_id}', env_path.read_text(), flags=re.MULTILINE), encoding='utf-8')
     # Read the manifest from the actual downloaded official service image.
     manifest = _run(state, ['run', '--rm', '--name', state['project'] + '-manifest',
         '--label', 'com.docker.compose.project=' + state['project'], '--network', 'none',
@@ -173,9 +199,20 @@ def up(path: Path, timeout=600):
         timeout=remaining(), log='extract-manifest-read.log').stdout.replace('${REGISTRY}', '')
     manifest_dir = Path(state['run_dir']) / 'manifests'
     (manifest_dir / 'extract.yml').write_text(manifest, encoding='utf-8')
-    shutil.copyfile(ROOT / 'tools/assemblyline-yara/service_manifest.yml', manifest_dir / 'yara.yml')
+    yara_manifest = _run(state, ['run', '--rm', '--name', state['project'] + '-yara-manifest',
+        '--label', 'com.docker.compose.project=' + state['project'], '--network', 'none', '--memory', '256m', '--cpus', '1',
+        '--pids-limit', '64', '--entrypoint', 'cat', image_id, 'service_manifest.yml'],
+        timeout=remaining(), log='yara-manifest-read.log').stdout
+    (manifest_dir / 'yara.yml').write_text(yara_manifest, encoding='utf-8')
     for name in ('extract.yml', 'yara.yml'):
         os.chmod(manifest_dir / name, 0o640)
+    if state.get('profile', 'default') == 'ghidra':
+        actual = _run(state, ['run', '--rm', '--name', state['project'] + '-ghidra-manifest',
+            '--label', 'com.docker.compose.project=' + state['project'], '--network', 'none', '--memory', '256m', '--cpus', '1',
+            '--pids-limit', '64', '--entrypoint', 'cat', ghidra_id, 'service_manifest.yml'],
+            timeout=remaining(), log='ghidra-manifest-read.log').stdout
+        (manifest_dir / 'ghidra.yml').write_text(actual, encoding='utf-8')
+        os.chmod(manifest_dir / 'ghidra.yml', 0o640)
     # Initialize schema with one upstream process before concurrent Rust/Python
     # startup. Their fresh-index creation otherwise races on an empty datastore.
     _compose(state, ['up', '-d', '--wait', '--wait-timeout', str(max(1, int(remaining()))),
@@ -183,7 +220,8 @@ def up(path: Path, timeout=600):
     _compose(state, ['run', '--rm', '--no-deps', 'bootstrap'], timeout=remaining(), log='bootstrap.log')
     _compose(state, ['up', '-d', '--wait', '--wait-timeout', str(max(1, int(remaining()))),
         'ui', 'dispatcher', 'service-server'], timeout=remaining(), log='up.log')
-    _compose(state, ['--profile', 'analysis', 'up', '-d', '--no-deps', 'extract', 'yara'], timeout=remaining(), log='analysis-up.log')
+    workers = ['extract', 'yara'] + (['ghidra'] if state.get('profile', 'default') == 'ghidra' else [])
+    _compose(state, ['--profile', 'analysis', 'up', '-d', '--no-deps', *workers], timeout=remaining(), log='analysis-up.log')
     key = Path(state['apikey_file']).read_text().strip()
     request = urllib.request.Request(state['base_url'] + '/api/v4/service/all/', headers={
         'x-user': state['user'], 'x-apikey': key})
@@ -193,7 +231,9 @@ def up(path: Path, timeout=600):
                 body = json.load(response)
             api_response = body.get('api_response', {})
             items = api_response.get('items', []) if isinstance(api_response, dict) else api_response
-            if body.get('api_error_message') == '' and len(items) >= 2:
+            required = {'Extract', 'PackweirYARA'} | ({'PackweirGhidra'} if state.get('profile', 'default') == 'ghidra' else set())
+            enabled = {item.get('name') for item in items if item.get('enabled') is True}
+            if body.get('api_error_message') == '' and required <= enabled:
                 break
         except (OSError, ValueError, urllib.error.URLError):
             pass
@@ -221,6 +261,7 @@ def identity(path: Path):
         img = json.loads(_run(state, ['image', 'inspect', item['image_id']]).stdout)[0]
         images[item['image_id']] = {'id': img['Id'], 'repo_digests': img.get('RepoDigests', []), 'architecture': img['Architecture'], 'os': img['Os']}
     manifest = {'schema_version': 1, 'project': state['project'], 'base_url': state['base_url'],
+        'profile': state.get('profile', 'default'),
         'lock_sha256': state['lock_sha256'],
         'source_lock_sha256': hashlib.sha256((HERE / 'stack.lock.json').read_bytes()).hexdigest(),
         'containers': sanitized, 'images': images,
@@ -242,6 +283,7 @@ def main():
     prep = commands.add_parser('prepare')
     prep.add_argument('--output', type=Path, required=True)
     prep.add_argument('--docker')
+    prep.add_argument('--profile', choices=('default', 'ghidra'), default='default')
     for command in ('up', 'down', 'identity'):
         child = commands.add_parser(command)
         child.add_argument('--state', type=Path, required=True)
@@ -249,7 +291,7 @@ def main():
             child.add_argument('--timeout', type=int, default=600)
     args = parser.parse_args()
     if args.command == 'prepare':
-        print(prepare(args.output, args.docker))
+        print(prepare(args.output, args.docker, args.profile))
     else:
         result = up(args.state, args.timeout) if args.command == 'up' else globals()[args.command](args.state)
         print(json.dumps(result, indent=2))

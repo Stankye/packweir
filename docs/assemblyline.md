@@ -1,6 +1,6 @@
 # Assemblyline v4 remote analysis
 
-Packweir has an experimental native Assemblyline v4 client with durable submission correlation and deferred polling. Version 0.10.0 adds a reproducible isolated live-qualification suite, explicit file-type applicability, and reconciliation against Packweir's own inventory. Assemblyline is an operator-managed analysis platform; the installed services determine what it can analyze. The client does not install Ghidra, a deobfuscator, or a VM sandbox.
+Packweir has an experimental native Assemblyline v4 client with durable submission correlation and deferred polling. Version 0.10.0 added isolated live qualification, file-type applicability, and native inventory reconciliation. Version 0.11.0 adds an optional [real Ghidra service and binary/derivation contract](binary-analysis.md). Assemblyline is an operator-managed platform; the installed services determine what it can analyze. The client does not automatically install optional services or a VM sandbox.
 
 The worker uploads the original package to one explicitly configured instance. A passing check requires complete, fresh results for every applicable pinned service on the original file and every extracted descendant. Every nonempty file needs at least one applicable service. A low platform score, successful upload, completed submission, or missing finding alone cannot pass a check.
 
@@ -105,7 +105,7 @@ Reconciliation only queues a current, non-running ambiguous request under the sa
 
 Completed passing/failing results keep their absolute validity; expiry can create a fresh generation with a new correlation while preserving the old receipt. Inconclusive, failed, and ambiguous records require review/rescan rather than an upload loop. Final local evidence commits atomically after all configured analyses finish, followed by any applicable [agent investigation](agent-escalation.md). Imported OCI claims never enter this flow.
 
-Version 0.10.0 changes delivery fingerprints. Upgrade workers and gateways together and obtain fresh analysis for prior approvals.
+Version 0.11.0 changes delivery fingerprints. Upgrade workers and gateways together and obtain fresh analysis for prior approvals.
 
 ## Administrative API and tests
 

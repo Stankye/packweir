@@ -1,0 +1,49 @@
+/* Harmless freestanding fixture. Its output bytes are analyzed, never run. */
+#if defined(_WIN32)
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT __attribute__((visibility("default")))
+#endif
+#define KEEP __attribute__((noinline, used))
+
+__attribute__((used)) volatile const unsigned char fixture_nonce[] = "PACKWEIR_GHIDRA_NONCE_@NONCE@";
+volatile unsigned char fixture_key = @KEY@;
+volatile unsigned int fixture_sink;
+
+#if @HAS_FRAME@
+struct __attribute__((packed)) fixture_frame_type {
+    unsigned int length;
+    unsigned char payload[@PAYLOAD_LENGTH@];
+};
+__attribute__((used, section(".pw_xor"))) volatile const struct fixture_frame_type fixture_frame = {
+    @PAYLOAD_LENGTH@, {@ENCODED_BYTES@}
+};
+#define FIXTURE_INPUT fixture_frame.payload
+#define FIXTURE_LENGTH @PAYLOAD_LENGTH@
+#else
+#define FIXTURE_INPUT fixture_nonce
+#define FIXTURE_LENGTH (sizeof(fixture_nonce) - 1)
+#endif
+
+EXPORT KEEP unsigned int fixture_decode(unsigned char *output, unsigned int limit) {
+    unsigned int i;
+    for (i = 0; i < FIXTURE_LENGTH && i < limit; ++i) {
+        output[i] = FIXTURE_INPUT[i] ^ fixture_key;
+    }
+    return i;
+}
+
+EXPORT KEEP unsigned int fixture_checksum(const unsigned char *input, unsigned int size) {
+    unsigned int state = 2166136261u;
+    unsigned int i;
+    for (i = 0; i < size; ++i) {
+        state = (state << 5) ^ (state >> 3) ^ input[i];
+    }
+    return state;
+}
+
+EXPORT KEEP void fixture_entry(void) {
+    unsigned char decoded[256];
+    unsigned int count = fixture_decode(decoded, sizeof(decoded));
+    fixture_sink = fixture_checksum(decoded, count) + fixture_nonce[0];
+}

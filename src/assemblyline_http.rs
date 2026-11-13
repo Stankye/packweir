@@ -17,7 +17,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +53,8 @@ pub struct AssemblylineConfig {
     #[serde(default)]
     pub service_spec: BTreeMap<String, BTreeMap<String, Value>>,
     pub policy: AssemblylinePolicy,
+    #[serde(default)]
+    pub binary_analysis: Option<crate::binary_analysis::BinaryAnalysisPolicy>,
     #[serde(default)]
     pub allow_private_network: bool,
     #[serde(default)]
@@ -98,6 +100,24 @@ fn environment_name(value: &str) -> bool {
 impl AssemblylineConfig {
     pub fn validate(&self) -> Result<()> {
         self.policy.validate()?;
+        if let Some(binary) = &self.binary_analysis {
+            binary.validate()?;
+            let pin = self
+                .policy
+                .required_services
+                .get(&binary.service)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "binary-analysis service must be explicitly selected and pinned"
+                    )
+                })?;
+            ensure!(
+                pin.tool_version
+                    .as_deref()
+                    .is_some_and(|v| v.ends_with(&format!(".identity/{}", binary.identity_sha256))),
+                "binary-analysis tool version must bind the exact producer identity"
+            );
+        }
         ensure!(
             self.allow_upload,
             "Assemblyline requires explicit allow_upload=true"
@@ -383,7 +403,7 @@ pub async fn advance(
     job: &Job,
     name: &str,
     config: &AssemblylineConfig,
-    bytes: &[u8],
+    bytes: &Arc<[u8]>,
     bundle: &Value,
     evidence_digest: &str,
 ) -> Result<Step> {
@@ -413,9 +433,19 @@ pub async fn advance(
             .await?;
     match record.state {
         State::Complete => {
-            return Ok(Step::Finished(
-                record.output.take().expect("complete record output"),
-            ));
+            let mut output = record.output.take().expect("complete record output");
+            if let Some(binary) = &config.binary_analysis {
+                crate::binary_remote::reconcile_with_empty_policy(
+                    binary,
+                    &job.filename,
+                    Arc::clone(bytes),
+                    &mut output,
+                    config.policy.max_result_age_seconds,
+                    config.policy.allow_empty_files,
+                )
+                .await?;
+            }
+            return Ok(Step::Finished(output));
         }
         State::Failed | State::Ambiguous => {
             return Ok(Step::Finished(unresolved(
@@ -541,6 +571,17 @@ pub async fn advance(
                         Utc::now(),
                     )?;
                     local_inventory.reconcile(&mut output, config.policy.allow_empty_files)?;
+                    if let Some(binary) = &config.binary_analysis {
+                        crate::binary_remote::reconcile_with_empty_policy(
+                            binary,
+                            &job.filename,
+                            Arc::clone(bytes),
+                            &mut output,
+                            config.policy.max_result_age_seconds,
+                            config.policy.allow_empty_files,
+                        )
+                        .await?;
+                    }
                     output.valid_until = Some(
                         output
                             .valid_until

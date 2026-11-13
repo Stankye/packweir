@@ -124,3 +124,54 @@ fn remote_checks_cannot_impersonate_verifiers_agents_builtins_or_local_checks() 
     });
     config.validate().unwrap();
 }
+
+#[test]
+fn binary_observation_profiles_require_an_exact_selected_producer_and_bound_policy() {
+    let identity = packweir::model::sha256(b"controlled binary producer, no real tool execution");
+    let mut value = profile();
+    value["policy"]["required_services"]["YARA"]["tool_version"] =
+        json!(format!("ghidra/12.2.identity/{identity}"));
+    value["binary_analysis"] = json!({"service":"YARA","identity_sha256":identity,
+        "required_capabilities":["decompile","pcode","decode_xor"],"candidate_kinds":["elf","pe"]});
+    let baseline = configured(value.clone());
+    baseline.validate().unwrap();
+    let reparsed: Config = toml::from_str(&toml::to_string(&baseline).unwrap()).unwrap();
+    reparsed.validate().unwrap();
+    assert_eq!(baseline.fingerprint(), reparsed.fingerprint());
+    for (pointer, replacement) in [
+        ("/binary_analysis/service", json!("unselected-service")),
+        ("/binary_analysis/identity_sha256", json!("0".repeat(64))),
+        ("/binary_analysis/required_capabilities", json!([])),
+        ("/binary_analysis/candidate_kinds", json!(["unknown-kind"])),
+        ("/policy/required_services/YARA/tool_version", Value::Null),
+        (
+            "/policy/required_services/YARA/tool_version",
+            json!("unbound engine revision"),
+        ),
+    ] {
+        let mut changed = value.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert!(
+            configured(changed).validate().is_err(),
+            "must reject {pointer}"
+        );
+    }
+    for (field, replacement) in [
+        ("candidate_kinds", json!(["elf"])),
+        ("required_capabilities", json!(["decompile"])),
+        (
+            "informational_warnings",
+            json!(["exact reviewed tool diagnostic"]),
+        ),
+    ] {
+        let mut changed = value.clone();
+        changed["binary_analysis"][field] = replacement;
+        let changed = configured(changed);
+        changed.validate().unwrap();
+        assert_ne!(
+            baseline.fingerprint(),
+            changed.fingerprint(),
+            "{field} changes delivery identity"
+        );
+    }
+}
