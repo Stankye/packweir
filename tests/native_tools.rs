@@ -315,4 +315,95 @@ async fn real_hipcheck_runs_a_pinned_policy_and_retains_plugin_analysis() {
         output.details["reports"][0]["report"]["passing"][0]["name"],
         "mitre/identity"
     );
+    let passing = &output.details["reports"][0]["report"];
+    assert_eq!(passing["recommendation"]["kind"], "Pass");
+    assert_eq!(passing["passing"][0]["passed"], true);
+    let plugin_value = passing["passing"][0]["value"].clone();
+    assert!(!plugin_value.is_null());
+    let mut proof = vec![json!({"case":"passing_policy","outcome":output.outcome,
+        "report":passing})];
+    let passing_policy = std::fs::read_to_string(root.join("policy.kdl")).unwrap();
+    for (name, analysis_policy, recommendation_policy, require_git, expected) in [
+        (
+            "required_analysis_fails",
+            "(eq #t #f)",
+            "(lte $ 1.0)",
+            false,
+            Outcome::Fail,
+        ),
+        (
+            "required_dependency_not_top_level_analysis",
+            "(eq #t #t)",
+            "(lte $ 1.0)",
+            true,
+            Outcome::Inconclusive,
+        ),
+        (
+            "investigate_recommendation",
+            "(eq #t #t)",
+            "(lt $ 0.0)",
+            false,
+            Outcome::Inconclusive,
+        ),
+    ] {
+        // These deliberately constant policies qualify transport and decision
+        // handling using real plugin results, rather than security thresholds.
+        assert_eq!(passing_policy.matches("(eq #t #t)").count(), 1);
+        assert_eq!(passing_policy.matches("(lte $ 1.0)").count(), 1);
+        let policy = passing_policy
+            .replacen("(eq #t #t)", analysis_policy, 1)
+            .replacen("(lte $ 1.0)", recommendation_policy, 1);
+        let policy_path = temp.path().join(format!("{name}.kdl"));
+        std::fs::write(&policy_path, policy).unwrap();
+        let mut variant = scanner.clone();
+        variant
+            .resources
+            .insert("policy".into(), pinned(&policy_path));
+        if require_git
+            && let ScannerDriver::Hipcheck {
+                required_analyses, ..
+            } = &mut variant.driver
+        {
+            // The pinned git service executes as identity's dependency. That
+            // does not supply a requested top-level git analysis result.
+            required_analyses.push("mitre/git".into());
+        }
+        let observed = scanner::run(&variant, &job(b"fixture"), b"fixture", &evidence(&mapping))
+            .await
+            .unwrap();
+        assert_eq!(observed.outcome, expected, "{name}: {:?}", observed.details);
+        let report = &observed.details["reports"][0]["report"];
+        assert_eq!(report["errored"], json!([]));
+        let list = if expected == Outcome::Fail {
+            "failing"
+        } else {
+            "passing"
+        };
+        assert_eq!(report[list].as_array().unwrap().len(), 1);
+        assert_eq!(report[list][0]["name"], "mitre/identity");
+        assert_eq!(report[list][0]["passed"], expected != Outcome::Fail);
+        assert_eq!(report[list][0]["value"], plugin_value);
+        assert_eq!(
+            report["recommendation"]["kind"],
+            if name == "investigate_recommendation" {
+                "Investigate"
+            } else {
+                "Pass"
+            }
+        );
+        if require_git {
+            assert_eq!(report["failing"], json!([]));
+            assert_eq!(
+                observed.details["required_analyses"],
+                json!(["mitre/identity", "mitre/git"])
+            );
+        }
+        proof.push(json!({"case":name,"outcome":observed.outcome,"report":report}));
+    }
+    println!(
+        "PACKWEIR_HIPCHECK_PROOF={}",
+        json!({"qualified":true,
+        "scope":"real upstream plugins and constant transport policies; no bespoke SDK plugin or production security policy claim",
+        "source_revision":mapping.source_revision,"cases":proof})
+    );
 }
